@@ -26,22 +26,22 @@
 # Do it at your own risks
 
 from scapy.all import IP, UDP, DNS, DNSQR, DNSRR, Raw, send, Automaton, ATMT, StreamSocket, log_interactive
-from base64 import b64encode, b64decode
 from random import randint
 from threading import Thread
+from optparse import OptionParser
 import socket, sys
 
 class Core(Automaton):
-    domain_name = "" 
+    dn = "" 
     def parse_qname(self, pkt):
-        return pkt[DNSQR].qname.rsplit(self.domain_name, 1)[0].split(".")
+        return pkt[DNSQR].qname.rsplit(self.dn, 1)[0].split(".")
         
     def master_filter(self, pkt):
         return (self.state.state == "WAITING" and
                 IP in pkt and UDP in pkt and
                 pkt[UDP].dport == 53 and DNS in pkt and
                 pkt[DNS].qr == 0 and DNSQR in pkt and
-                pkt[DNSQR].qname.endswith(self.domain_name + "."))
+                pkt[DNSQR].qname.endswith(self.dn + "."))
 
     def forge_packet(self, pkt, rdata="", rcode=0):
         d = pkt[IP].src 
@@ -51,19 +51,19 @@ class Core(Automaton):
         t = pkt[DNSQR].qtype
         qn = pkt[DNSQR].qname
         an = (None, DNSRR(rrname=qn, type=t, rdata=rdata, ttl=60))[rcode == 0]        
-        ns = DNSRR(rrname=self.domain_name, type="NS", ttl=3600, rdata="ns."+self.domain_name)
+        ns = DNSRR(rrname=self.dn, type="NS", ttl=3600, rdata="ns."+self.dn)
         return IP(dst=d)/UDP(dport=dp)/DNS(id=i, qr=1, rd=1, ra=1, rcode=rcode, qd=q, an=an, ns=ns)
 
 
-class DNScapyServerFather(Core):
-    def parse_args(self, domain_name, ext_ip, max_clients=10, **kargs):
-        if max_clients >= 255:
-            print >> sys.stderr, "Bad arguments. Nb max of clients is 255"
-        self.domain_name = domain_name
+class Parent(Core):
+    def parse_args(self, dn, ext_ip, debug, nb_clients, ssh_p):
+        self.dn = dn
         self.ext_ip = ext_ip
-        self.max_clients = max_clients
+        self.dbg = debug
+        self.nb_clients = nb_clients
+        self.ssh_p = ssh_p
         bpf = "udp port 53"
-        Automaton.parse_args(self, filter=bpf, **kargs)
+        Automaton.parse_args(self, filter=bpf, debug=debug)
      
     def master_filter(self, pkt):
         if Core.master_filter(self, pkt) and pkt[IP].src != self.ext_ip:
@@ -73,25 +73,25 @@ class DNScapyServerFather(Core):
             return False
             
     def get_identifier(self):
-        if len(self.available_slots) >= 1:
-            return self.available_slots.pop()
-        elif self.clean_child_threads() >= 1:
-            return self.available_slots.pop()
+        if len(self.empty_slots) >= 1:
+            return self.empty_slots.pop()
+        elif self.kill_children() >= 1:
+            return self.empty_slots.pop()
         else:
             return None
             
-    def clean_child_threads(self):
-        for key in self.instances.keys():
-            if self.instances[key].state.state == "END":
-                self.instances[key].stop()
-                del(self.instances[key])
-                self.available_slots.add(key)
-        return len(self.available_slots)
+    def kill_children(self):
+        for k in self.childs.keys():
+            if self.childs[k].state.state == "END":
+                self.childs[k].stop()
+                del(self.childs[k])
+                self.empty_slots.add(k)
+        return len(self.empty_slots)
 
     @ATMT.state(initial=True)
     def START(self):
-        self.instances = {}
-        self.available_slots = set(range(1, self.max_clients+1))
+        self.childs = {}
+        self.empty_slots = set(range(1, self.nb_clients+1))
         raise self.WAITING()
 
     @ATMT.state()
@@ -99,21 +99,21 @@ class DNScapyServerFather(Core):
         pass
 
     @ATMT.receive_condition(WAITING)
-    def got_a_true_dns_request(self, pkt):
+    def true_dns_request(self, pkt):
         if not self.qname[-2].isdigit():
             qtype = pkt[DNSQR].sprintf("%qtype%")
             raise self.WAITING().action_parameters(pkt, qtype)
 
-    @ATMT.action(got_a_true_dns_request)
-    def create_fake_dns_reply(self, pkt, qtype):
+    @ATMT.action(true_dns_request)
+    def true_dns_reply(self, pkt, qtype):
         if qtype == "A":
             reply = Core.forge_packet(self, pkt, rdata=self.ext_ip)
         elif qtype == "SOA":
-            reply = Core.forge_packet(self, pkt, rdata="ns.{0} root.{0} {1} 28800 14400 3600000 0".format(self.domain_name, randint(1, 65535)))
+            reply = Core.forge_packet(self, pkt, rdata="ns.{0} root.{0} {1} 28800 14400 3600000 0".format(self.dn, randint(1, 65535)))
         elif qtype == "NS":
-            reply = Core.forge_packet(self, pkt, rdata="ns."+self.domain_name)
+            reply = Core.forge_packet(self, pkt, rdata="ns."+self.dn)
         elif qtype == "MX":
-            reply = Core.forge_packet(self, pkt, rdata="mail."+self.domain_name)
+            reply = Core.forge_packet(self, pkt, rdata="mail."+self.dn)
         elif qtype == "CNAME" or qtype == "TXT":
             reply = Core.forge_packet(self, pkt, rcode=3) 
         elif qtype == "AAAA" or qtype == "NULL":
@@ -123,85 +123,83 @@ class DNScapyServerFather(Core):
         send(reply, verbose=0)
 
     @ATMT.receive_condition(WAITING)
-    def got_a_connection_request(self, pkt):
+    def connection_request(self, pkt):
         if len(self.qname) >=3 and self.qname[-3] == "0":
             raise self.WAITING().action_parameters(pkt)
 
-    @ATMT.action(got_a_connection_request)
-    def start_server_thread(self, pkt):
+    @ATMT.action(connection_request)
+    def childbirth(self, pkt):
         i = self.get_identifier()
         if i is not None:
-            thread = DNScapyServerChild(self.domain_name, i, pkt, debug=self.debug_level)
-            self.instances[i] = thread
+            thread = Child(self.dn, i, pkt, self.dbg, self.ssh_p)
+            self.childs[i] = thread
             thread.runbg()
 
 
-class DNScapyServerChild(Core):
-    def parse_args(self, domain_name, con_id, initial_pkt, **kargs):
-        self.domain_name = domain_name
+class Child(Core):
+    def parse_args(self, dn, con_id, first_pkt, dbg, ssh_p):
+        self.dn = dn
         self.con_id = str(con_id)
-        self.initial_pkt = initial_pkt
-        Automaton.parse_args(self, **kargs)
+        self.first_pkt = first_pkt
+        self.ssh_p = ssh_p
+        Automaton.parse_args(self, debug=dbg)
 
     def master_filter(self, pkt):        
         if (Core.master_filter(self, pkt) and pkt[IP].src == self.ip_client):
             self.qname = Core.parse_qname(self, pkt)    
-            if ( len(self.qname) >= 4 and
-                    self.qname[-2].isdigit() and 
-                    self.qname[-3] == self.con_id):
+            if ( len(self.qname) >= 4 and self.qname[-2].isdigit() and self.qname[-3] == self.con_id):
                 self.msg_type = self.qname[-4]
                 return True
         else: 
             return False
     
     def calculate_limit_size(self, pkt):
-        s = self.pkt_max_size - len(pkt[DNS]) - 2*len(DNSRR()) - len(pkt[DNS].qd.qname) - 2*len(self.domain_name) - len("ns.")
-        return min((s, 1)[s<1], 253) 
+        s = self.pkt_max_size - len(pkt[DNS]) - 2*len(DNSRR()) - len(pkt[DNS].qd.qname) - 2*len(self.dn) - len("ns.")
+        return min((s, 1)[s<1], self.qname_max_size) 
 
-    def fragment_data(self, b64_data, limit_size):
-        first_frag = b64_data[:limit_size]
-        rest = b64_data[limit_size:]
-        rdata = '.'.join([first_frag[i:i+self.subdomain_max_size] for i in range(0, len(first_frag), self.subdomain_max_size)])
-        if rest:
-             return "{0} {1}".format(rdata, self.fragment_data(rest, limit_size))                
-        else:
-            return rdata            
-    
+    def fragment_data(self, data, limit_size):
+        qname= ""
+        rest = data
+        while len(rest) > 0:
+            d = rest[:limit_size]
+            qname += '.'.join([d[j:j+self.label_size] for j in range(0, len(d), self.label_size)])
+            rest = rest[limit_size:]
+            if len(rest) > 0:
+                qname += " "
+        return qname
+          
     @ATMT.state(initial=True)
     def START(self):
-        self.nonce_bytes_size = 2
-        self.nonce_max_value = 2**(8*self.nonce_bytes_size) - 1
-        self.nonce_real_size = len(str(self.nonce_max_value))
-        self.subdomain_max_size = 63
+        self.label_size = 63
         self.qname_max_size = 253
         self.pkt_max_size = 512
-        self.received_data = ""
-        self.wanted_pkt_nb = None
-        self.last_wanted_pkt_nb = None
-        self.last_received_pkt_nb = None
-        self.ip_client = self.initial_pkt[IP].src
+        self.recv_data = ""
+        self.wanted = None
+        self.last_wanted = None
+        self.last_recv = None
+        self.ip_client = self.first_pkt[IP].src
         self.is_first_wyw_pkt = True
         raise self.TICKLING()
 
     @ATMT.state()
     def TICKLING(self):
         s = socket.socket()
-        s.connect(("127.0.0.1", 22))
+        s.connect(("127.0.0.1", self.ssh_p))
         self.stream = StreamSocket(s, Raw)
-        ssh_server_msg = self.stream.recv()
-        raise self.CON(ssh_server_msg.load)
+        ssh_msg = self.stream.recv()
+        raise self.CON(ssh_msg.load)
         
     @ATMT.state()
-    def CON(self, ssh_server_msg):
-        if ssh_server_msg == "":
+    def CON(self, ssh_msg):
+        if ssh_msg == "":
             raise self.TICKLING()
-        s = self.calculate_limit_size(self.initial_pkt)
-        fragmented_msg = self.fragment_data(b64encode(ssh_server_msg), s).split(" ")
-        if len(fragmented_msg) == 1:
-            connection_reply_pkt = Core.forge_packet(self, self.initial_pkt, "0.{0}.0.{1}".format(self.con_id, fragmented_msg[0]))
+        s = self.calculate_limit_size(self.first_pkt)
+        frag_msg = self.fragment_data(ssh_msg.encode("base64"), s).split(" ")
+        if len(frag_msg) == 1:
+            pkt = Core.forge_packet(self, self.first_pkt, "0.{0}.0.{1}".format(self.con_id, frag_msg[0]))
         else:
-            connection_reply_pkt = Core.forge_packet(self, self.initial_pkt, "0.{0}.{1}".format(self.con_id, str(len(fragmented_msg)-1)))
-        send(connection_reply_pkt, verbose=0)
+            pkt = Core.forge_packet(self, self.first_pkt, "0.{0}.{1}".format(self.con_id, str(len(frag_msg)-1)))
+        send(pkt, verbose=0)
         raise self.WAITING()
 
     @ATMT.state()
@@ -213,41 +211,41 @@ class DNScapyServerChild(Core):
         raise self.END()
 
     @ATMT.receive_condition(WAITING)
-    def got_a_data_pkt(self, pkt):
+    def data_pkt(self, pkt):
         if self.msg_type == "1":
             pkt_nb = self.qname[-5]
             if pkt_nb.isdigit():
                 raise self.DATA_RECEPTION(pkt, int(pkt_nb))
                 
     @ATMT.receive_condition(WAITING)
-    def got_an_enquiry_pkt(self, pkt):
+    def iwt_pkt(self, pkt):
         if self.msg_type == "2":
             raise self.IWT(pkt)
 
     @ATMT.receive_condition(WAITING)
-    def got_a_ttm_pkt(self, pkt):
+    def ttm_pkt(self, pkt):
         if self.msg_type == "3":
             asked_pkt = self.qname[-5]
             if asked_pkt.isdigit():
                 raise self.DATA_EMISSION(pkt, int(asked_pkt))
 
     @ATMT.receive_condition(WAITING)
-    def got_a_done_pkt(self, pkt):
+    def done_pkt(self, pkt):
         if self.msg_type == "4":
             raise self.DONE(pkt)
 
     @ATMT.state()
     def DATA_RECEPTION(self, pkt, pkt_nb):
-        if self.wanted_pkt_nb is None:
-            self.wanted_pkt_nb = pkt_nb
-        if pkt_nb == self.last_wanted_pkt_nb:
+        if self.wanted is None:
+            self.wanted = pkt_nb
+        if pkt_nb == self.last_wanted:
             ack_pkt = Core.forge_packet(self, pkt, "1." + str(pkt_nb))
             send(ack_pkt, verbose=0)
-        elif pkt_nb == self.wanted_pkt_nb:
-            self.received_data += "".join(self.qname[:-5])
-            self.last_received_pkt_nb = pkt_nb
-            if self.wanted_pkt_nb > 0:
-                self.wanted_pkt_nb -= 1
+        elif pkt_nb == self.wanted:
+            self.recv_data += "".join(self.qname[:-5])
+            self.last_recv = pkt_nb
+            if self.wanted > 0:
+                self.wanted -= 1
             ack_pkt = Core.forge_packet(self, pkt, "1." + str(pkt_nb))
             send(ack_pkt, verbose=0)
         raise self.WAITING()
@@ -258,26 +256,26 @@ class DNScapyServerChild(Core):
         After receiving a WYW (What You Want) pkt from the client, the server
         says how many DNS pkts he needs to send the reply
         """
-        self.wanted_pkt_nb = None #Reset the variable for data reception
-        self.last_wanted_pkt_nb = None
+        self.wanted = None
+        self.last_wanted = None
         if self.is_first_wyw_pkt:
-            self.iwt_pkt_to_send = Core.forge_packet(self, pkt,"4")
-            msg_for_ssh_server = Raw(b64decode(self.received_data))
-            reply_from_ssh_server = self.stream.sr1(msg_for_ssh_server, timeout=1, verbose=0)
-            if reply_from_ssh_server is not None:
-                self.fragmented_answer = self.fragment_data(b64encode(reply_from_ssh_server.load), self.calculate_limit_size(pkt)).split(" ")
-                self.iwt_pkt_to_send = Core.forge_packet(self, pkt,"2." + str(len(self.fragmented_answer)))
+            self.iwt_pkt = Core.forge_packet(self, pkt,"4")
+            ssh_request = Raw(self.recv_data.decode("base64"))
+            ssh_reply = self.stream.sr1(ssh_request, timeout=1, verbose=0)
+            if ssh_reply is not None:
+                self.frag_reply = self.fragment_data(ssh_reply.load.encode("base64"), self.calculate_limit_size(pkt)).split(" ")
+                self.iwt_pkt = Core.forge_packet(self, pkt,"2." + str(len(self.frag_reply)))
                 self.is_first_wyw_pkt = False
-            send(self.iwt_pkt_to_send, verbose=0)
-            self.received_data = ""
+            send(self.iwt_pkt, verbose=0)
+            self.recv_data = ""
         else:
-            send(self.iwt_pkt_to_send, verbose=0)
+            send(self.iwt_pkt, verbose=0)
         raise self.WAITING()
 
     @ATMT.state()
     def DATA_EMISSION(self, pkt, asked_pkt):
-        if asked_pkt <= len(self.fragmented_answer):
-            data_pkt = Core.forge_packet(self, pkt, "3.{0}.{1}".format(str(asked_pkt), self.fragmented_answer[-(asked_pkt+1)]))
+        if asked_pkt <= len(self.frag_reply):
+            data_pkt = Core.forge_packet(self, pkt, "3.{0}.{1}".format(str(asked_pkt), self.frag_reply[-(asked_pkt+1)]))
             send(data_pkt, verbose=0)
         raise self.WAITING()
 
@@ -292,25 +290,25 @@ class DNScapyServerChild(Core):
         pass
 
         
-def main(argv):
-    try:
-        domain_name = argv[1]
-        ext_ip = argv[2]
-    except IndexError:
-        print >> sys.stderr, "Bad arguments. Usage: domain_name external_ip [debug_level]"
-        sys.exit(0)
-    try:
-        debug_level = int(argv[3])
-    except IndexError:
-        debug_level = 0
-    except ValueError:
-        print >> sys.stderr, "Bad arguments. debug_level must be an int"
-        sys.exit(0)
-    log_interactive.setLevel(1)
-    DNScapy = DNScapyServerFather(domain_name, ext_ip, debug=debug_level)
-    #DNScapyServerFather.graph(target="> /tmp/DNScapy_server_father.pdf")
-    #DNScapyServerChild.graph(target="> /tmp/DNScapy_server_child.pdf")
-    DNScapy.run()
-
 if __name__ == "__main__":
-    main(sys.argv)
+    v = "%prog 0.1 - 2011"
+    u = "usage: %prog [options]  DOMAIN_NAME  EXTERNAL_IP  [options]"
+    parser = OptionParser(usage=u, version=v)
+    parser.add_option("-g", "--graph", dest="graph", action="store_true", help="Generate the graph of the automaton and save it to /tmp. You will need some extra packages. Refer to www.secdev.org/projects/scapy/portability.html. In short: apt-get install graphviz imagemagick python-gnuplot python-pyx", default=False)
+    parser.add_option("-d", "--debug-lvl", dest="debug", type="int", help="Set the debug level, where D is an integer between 0 (quiet) and 5 (very verbose). Default is 0", metavar="D", default=0)
+    parser.add_option("-p", "--ssh-port", dest="port", type="int", help="P is the listening port of your SSH server. Default is 22.", metavar="P", default=22)
+    parser.add_option("-c", "--clients", dest="nb_clients", type="int", help="C is the max number of simultaneous clients your server will handle with. Max is 1000. Default is 10.", metavar="C", default=10)
+    (opt, args) = parser.parse_args()
+    if opt.nb_clients > 1000:
+        parser.error("the max number of simultaneous clients is 1000")
+    if len(args) != 2:
+        parser.error("incorrect number of arguments. Please give the domain name to use and the external IP address of the server")
+    dn = args[0]
+    ext_ip = args[1]
+    log_interactive.setLevel(1)
+    dnscapy = Parent(dn, ext_ip, debug=opt.debug, nb_clients=opt.nb_clients, ssh_p=opt.port)
+    if opt.graph:
+        Parent.graph(target="> /tmp/dnscapy_server_parent.pdf")
+        Child.graph(target="> /tmp/dnscapy_server_child.pdf")
+    dnscapy.run()
+

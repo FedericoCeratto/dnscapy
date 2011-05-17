@@ -27,19 +27,20 @@
 
 from scapy.all import IP, UDP, DNS, DNSQR, sr1, Automaton, ATMT, log_interactive
 from math import ceil
-from random import randint
+from random import randint, choice
 from datetime import datetime
 from optparse import OptionParser
 import os, sys, fcntl, time
 
 class Client(Automaton):
-    def parse_args(self, dn, ip_dns, debug, keep_alive, timeout, retry):
+    def parse_args(self, dn, ip_dns, debug=0, keep_alive=30, timeout=3, retry=3, mode="CNAME"):
         Automaton.parse_args(self, debug)
         self.dn = dn
         self.ip_dns = ip_dns
         self.keep_alive = keep_alive
         self.timeout = timeout
         self.retry = retry
+        self.mode = mode
 
     def forge_packet(self, qname, is_connection = False):
         sp = randint(10000,50000)
@@ -49,7 +50,11 @@ class Client(Automaton):
             con_id = ""
         else:
             con_id = self.con_id + "."
-        q = DNSQR(qtype='CNAME', qname="{0}.{1}{2}.{3}".format(qname, con_id, str(n), self.dn))
+        if self.mode == "RAND":
+            qtype = choice(["TXT","CNAME"])
+        else:
+            qtype = self.mode
+        q = DNSQR(qtype=qtype, qname="{0}.{1}{2}.{3}".format(qname, con_id, str(n), self.dn))
         return IP(dst=self.ip_dns)/UDP(sport=sp)/DNS(id=i, rd=1, qd=q)
 
     def calculate_limit_size(self):
@@ -214,19 +219,23 @@ if __name__ == "__main__":
     v = "%prog 0.1 - 2011"
     u = "usage: %prog [options]  DOMAIN_NAME  IP_INTERNAL_DNS  [options]"
     parser = OptionParser(usage=u, version=v)
-    parser.add_option("-g", "--graph", dest="graph", action="store_true", help="Generate the graph of the automaton and save it to /tmp. You will need some extra packages. Refer to www.secdev.org/projects/scapy/portability.html. In short: apt-get install graphviz imagemagick python-gnuplot python-pyx", default=False)
+    parser.add_option("-m", "--mode", dest="mode", help="Set the DNS field use for the tunneling. Possible values are CNAME, TXT and RAND. TXT offers better speed but CNAME offers better compatibility. RAND mean that both TXT and CNAME are randomly used. Default is CNAME.", default="CNAME")
+    parser.add_option("-g", "--graph", dest="graph", action="store_true", help="Generate the graph of the automaton, save it to /tmp and exit. You will need some extra packages. Refer to www.secdev.org/projects/scapy/portability.html. In short: apt-get install graphviz imagemagick python-gnuplot python-pyx", default=False)
     parser.add_option("-d", "--debug-lvl", dest="debug", type="int", help="Set the debug level, where D is an integer between 0 (quiet) and 5 (very verbose). Default is 0", metavar="D", default=0)
     parser.add_option("-k", "--keep-alive", dest="keep_alive", type="int", help="After waiting during K seconds, the client sends a keep-alive packet. Default is 30.", metavar="K", default=30)
     parser.add_option("-t", "--timeout", dest="timeout", type="int", help="After sending a packet to the server, the client waits for the reply up to T seconds. If there is no reply the packet is re-sent. Default is 3.", metavar="T", default=3)
     parser.add_option("-r", "--retry", dest="retry", type="int", help="After R retries without response, the connection with the server is considered broken. Default is 3.", metavar="R", default=3)
     (opt, args) = parser.parse_args()
+    if opt.graph:
+        Client.graph(target="> /tmp/dnscapy_client.pdf")
+        sys.exit(0)
+    if opt.mode not in ["CNAME", "TXT", "RAND"]:
+        parser.error("incorrect mode. Possible values are CNAME, TXT and RAND. Default is CNAME.")
     if len(args) != 2:
         parser.error("incorrect number of arguments. Please give the domain name to use and the IP address of the client's internal DNS server")
     dn = args[0]
     ip_dns = args[1]
     log_interactive.setLevel(1)
-    automaton = Client(dn=dn, ip_dns=ip_dns, debug=opt.debug, keep_alive=opt.keep_alive, timeout=opt.timeout, retry=opt.retry)
-    if opt.graph:
-        Client.graph(target="> /tmp/dnscapy_client.pdf")
+    automaton = Client(dn=dn, ip_dns=ip_dns, debug=opt.debug, keep_alive=opt.keep_alive, timeout=opt.timeout, retry=opt.retry, mode=opt.mode)
     automaton.run()
 

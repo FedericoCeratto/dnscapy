@@ -31,6 +31,9 @@ from threading import Thread
 from optparse import OptionParser
 import socket, sys
 
+CNAME = 5
+TXT = 16
+
 class Core(Automaton):
     dn = "" 
     def parse_qname(self, pkt):
@@ -50,13 +53,15 @@ class Core(Automaton):
         q = pkt[DNS].qd    
         t = pkt[DNSQR].qtype
         qn = pkt[DNSQR].qname
+        if t == TXT:
+            rdata = str(len(rdata)).encode("hex") + rdata
         an = (None, DNSRR(rrname=qn, type=t, rdata=rdata, ttl=60))[rcode == 0]        
         ns = DNSRR(rrname=self.dn, type="NS", ttl=3600, rdata="ns."+self.dn)
         return IP(dst=d)/UDP(dport=dp)/DNS(id=i, qr=1, rd=1, ra=1, rcode=rcode, qd=q, an=an, ns=ns)
 
 
 class Parent(Core):
-    def parse_args(self, dn, ext_ip, debug, nb_clients, ssh_p):
+    def parse_args(self, dn, ext_ip, debug=0, nb_clients=10, ssh_p=22):
         self.dn = dn
         self.ext_ip = ext_ip
         self.dbg = debug
@@ -137,7 +142,7 @@ class Parent(Core):
 
 
 class Child(Core):
-    def parse_args(self, dn, con_id, first_pkt, dbg, ssh_p):
+    def parse_args(self, dn, con_id, first_pkt, dbg=0, ssh_p=22):
         self.dn = dn
         self.con_id = str(con_id)
         self.first_pkt = first_pkt
@@ -155,17 +160,23 @@ class Child(Core):
     
     def calculate_limit_size(self, pkt):
         s = self.pkt_max_size - len(pkt[DNS]) - 2*len(DNSRR()) - len(pkt[DNS].qd.qname) - 2*len(self.dn) - len("ns.")
-        return min((s, 1)[s<1], self.qname_max_size) 
+        if pkt[DNSQR].qtype == TXT:
+            max_size = 512
+            s -= len(str(s))
+        else:
+            max_size = self.qname_max_size
+        return min((s, 1)[s<1], max_size) 
 
-    def fragment_data(self, data, limit_size):
-        qname= ""
-        rest = data
-        while len(rest) > 0:
-            d = rest[:limit_size]
-            qname += '.'.join([d[j:j+self.label_size] for j in range(0, len(d), self.label_size)])
-            rest = rest[limit_size:]
-            if len(rest) > 0:
-                qname += " "
+    def fragment_data(self, data, limit_size, qtype):
+        if qtype == CNAME:
+            qname = []
+            rest = data
+            while len(rest) > 0:
+                d = rest[:limit_size]
+                qname.append('.'.join([d[i:i+self.label_size] for i in range(0, len(d), self.label_size)]))
+                rest = rest[limit_size:]
+        elif qtype == TXT:
+            qname = [data[i:i+limit_size] for i in range(0, len(data), limit_size)]
         return qname
           
     @ATMT.state(initial=True)
@@ -194,7 +205,8 @@ class Child(Core):
         if ssh_msg == "":
             raise self.TICKLING()
         s = self.calculate_limit_size(self.first_pkt)
-        frag_msg = self.fragment_data(ssh_msg.encode("base64"), s).split(" ")
+        qtype = self.first_pkt[DNSQR].qtype 
+        frag_msg = self.fragment_data(ssh_msg.encode("base64"), s, qtype)
         if len(frag_msg) == 1:
             pkt = Core.forge_packet(self, self.first_pkt, "0.{0}.0.{1}".format(self.con_id, frag_msg[0]))
         else:
@@ -263,7 +275,9 @@ class Child(Core):
             ssh_request = Raw(self.recv_data.decode("base64"))
             ssh_reply = self.stream.sr1(ssh_request, timeout=1, verbose=0)
             if ssh_reply is not None:
-                self.frag_reply = self.fragment_data(ssh_reply.load.encode("base64"), self.calculate_limit_size(pkt)).split(" ")
+                qtype = pkt[DNSQR].qtype
+                s = self.calculate_limit_size(pkt)
+                self.frag_reply = self.fragment_data(ssh_reply.load.encode("base64"), s, qtype)
                 self.iwt_pkt = Core.forge_packet(self, pkt,"2." + str(len(self.frag_reply)))
                 self.is_first_wyw_pkt = False
             send(self.iwt_pkt, verbose=0)
@@ -294,11 +308,15 @@ if __name__ == "__main__":
     v = "%prog 0.1 - 2011"
     u = "usage: %prog [options]  DOMAIN_NAME  EXTERNAL_IP  [options]"
     parser = OptionParser(usage=u, version=v)
-    parser.add_option("-g", "--graph", dest="graph", action="store_true", help="Generate the graph of the automaton and save it to /tmp. You will need some extra packages. Refer to www.secdev.org/projects/scapy/portability.html. In short: apt-get install graphviz imagemagick python-gnuplot python-pyx", default=False)
+    parser.add_option("-g", "--graph", dest="graph", action="store_true", help="Generate the graph of the automaton, save it to /tmp and exit. You will need some extra packages. Refer to www.secdev.org/projects/scapy/portability.html. In short: apt-get install graphviz imagemagick python-gnuplot python-pyx", default=False)
     parser.add_option("-d", "--debug-lvl", dest="debug", type="int", help="Set the debug level, where D is an integer between 0 (quiet) and 5 (very verbose). Default is 0", metavar="D", default=0)
     parser.add_option("-p", "--ssh-port", dest="port", type="int", help="P is the listening port of your SSH server. Default is 22.", metavar="P", default=22)
     parser.add_option("-c", "--clients", dest="nb_clients", type="int", help="C is the max number of simultaneous clients your server will handle with. Max is 1000. Default is 10.", metavar="C", default=10)
     (opt, args) = parser.parse_args()
+    if opt.graph:
+        Parent.graph(target="> /tmp/dnscapy_server_parent.pdf")
+        Child.graph(target="> /tmp/dnscapy_server_child.pdf")
+        sys.exit(0)
     if opt.nb_clients > 1000:
         parser.error("the max number of simultaneous clients is 1000")
     if len(args) != 2:
@@ -307,8 +325,5 @@ if __name__ == "__main__":
     ext_ip = args[1]
     log_interactive.setLevel(1)
     dnscapy = Parent(dn, ext_ip, debug=opt.debug, nb_clients=opt.nb_clients, ssh_p=opt.port)
-    if opt.graph:
-        Parent.graph(target="> /tmp/dnscapy_server_parent.pdf")
-        Child.graph(target="> /tmp/dnscapy_server_child.pdf")
     dnscapy.run()
 

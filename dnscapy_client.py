@@ -26,35 +26,35 @@
 # Do it at your own risks
 
 from scapy.all import IP, UDP, DNS, DNSQR, sr1, Automaton, ATMT, log_interactive
-from base64 import b64encode, b64decode
 from math import ceil
 from random import randint
 from datetime import datetime
+from optparse import OptionParser
 import os, sys, fcntl, time
 
-class DNScapyClient(Automaton):
-    def parse_args(self, domain_name, ip_internal_dns, **kargs):
-        Automaton.parse_args(self, **kargs)
-        self.domain_name = domain_name
-        self.ip_dns = ip_internal_dns
+class Client(Automaton):
+    def parse_args(self, dn, ip_dns, debug, keep_alive, timeout, retry):
+        Automaton.parse_args(self, debug)
+        self.dn = dn
+        self.ip_dns = ip_dns
+        self.keep_alive = keep_alive
+        self.timeout = timeout
+        self.retry = retry
 
     def forge_packet(self, qname, is_connection = False):
         sp = randint(10000,50000)
         i = randint(1, 65535)
-        nonce = randint(0, self.nonce_max_value)
-        #con_id = ("", self.con_id + ".")[not is_connection]
+        n = randint(0, self.n_max)
         if is_connection:
             con_id = ""
         else:
             con_id = self.con_id + "."
-        q = DNSQR(qtype='CNAME', qname="{0}.{1}{2}.{3}".format(qname, con_id, str(nonce), self.domain_name))
+        q = DNSQR(qtype='CNAME', qname="{0}.{1}{2}.{3}".format(qname, con_id, str(n), self.dn))
         return IP(dst=self.ip_dns)/UDP(sport=sp)/DNS(id=i, rd=1, qd=q)
 
     def calculate_limit_size(self):
-        qname_max_size = 253
-        con_id_size = 1
-        temp = qname_max_size - len(self.domain_name) - self.nonce_real_size - 5 - 10 - con_id_size - 1
-        limit_size = int(temp - ceil(float(temp)/(self.subdomain_max_size+1)))
+        temp = self.qname_max_size - len(self.dn) - self.n_size - 5 - 10 - len(self.con_id) - 1
+        limit_size = int(temp - ceil(float(temp)/(self.label_size+1)))
         return limit_size
 
     def fragment_data(self, data, limit_size):
@@ -62,7 +62,7 @@ class DNScapyClient(Automaton):
         rest = data
         while len(rest) > 0:
             d = rest[:limit_size]
-            qname += '.'.join([d[j:j+self.subdomain_max_size] for j in range(0, len(d), self.subdomain_max_size)])
+            qname += '.'.join([d[j:j+self.label_size] for j in range(0, len(d), self.label_size)])
             rest = rest[limit_size:]
             if len(rest) > 0:
                 qname += " " 
@@ -70,23 +70,24 @@ class DNScapyClient(Automaton):
 
     @ATMT.state(initial=True)
     def START(self):
-        self.nonce_bytes_size = 2
-        self.nonce_max_value = 2**(8*self.nonce_bytes_size) - 1
-        self.nonce_real_size = len(str(self.nonce_max_value))
-        self.subdomain_max_size = 63
+        self.n_bytes = 2
+        self.n_max = 2**(8*self.n_bytes) - 1
+        self.n_size = len(str(self.n_max))
+        self.label_size = 63
+        self.qname_max_size = 253
         self.recv_data = ""
         self.was_in_data = False
-        connection_request_pkt = self.forge_packet("0", True)
-        raise self.SR1(connection_request_pkt)
+        con_request_pkt = self.forge_packet("0", True)
+        raise self.SR1(con_request_pkt)
 
     @ATMT.state()
     def SR1(self, pkt):
         rcode = None
         nb_retry = 0
         while rcode != 0:
-            rep = sr1(pkt, filter="udp port 53", timeout=3, retry=3, verbose=0)
+            rep = sr1(pkt, filter="udp port 53", timeout=self.timeout, retry=self.retry, verbose=0)
             if rep is None or nb_retry >= 3:
-                raise self.ERROR("Error : No response, or multiple server failure")
+                raise self.ERROR("Timeout Error : No response after 3 requests")
             rcode = rep[DNS].rcode
             nb_retry += 1
         try:
@@ -132,6 +133,7 @@ class DNScapyClient(Automaton):
         """TTM (Talk To Me) state of the automaton.
         Sending empty packets to receive data from the server.
         """
+        self.was_in_data = True
         if msg_type == "2":
             nb_of_pkts = data
             first_ttm_pkt = self.forge_packet("{0}.3".format(nb_of_pkts))
@@ -174,7 +176,7 @@ class DNScapyClient(Automaton):
 
     @ATMT.state()
     def DONE(self):
-        msg = b64decode(self.recv_data)
+        msg = self.recv_data.decode("base64")
         self.recv_data = ""
         sys.stdout.write(msg)
         sys.stdout.flush()
@@ -198,37 +200,33 @@ class DNScapyClient(Automaton):
             except:
                 time.sleep(sleep_time)
                 timeout += sleep_time
-                if timeout >= 10:
+                if timeout >= self.keep_alive:
                     raise self.WYW()
-        fragmented_input_msg = self.fragment_data(b64encode(input_msg), self.calculate_limit_size())
-        self.data_to_send = fragmented_input_msg.split(" ")
+        frag_input_msg = self.fragment_data(input_msg.encode("base64"), self.calculate_limit_size())
+        self.data_to_send = frag_input_msg.split(" ")
         raise self.DATA()
 
     @ATMT.state(error=True)
     def ERROR(self, error_msg):
         print >> sys.stderr, "Error message: ", error_msg
-        open_file = open("/tmp/DNScapy_client_error.log", "a")
-        open_file.write(str(datetime.today()) + ":: " + error_msg + "")
-        open_file.close()
-
-def main(argv):
-    try:
-        domain_name = argv[1]
-        ip_internal_dns = argv[2]
-    except IndexError:
-        print >> sys.stderr, "Bad arguments. Usage: domain_name ip_internal_dns [debug_level]"
-        sys.exit(0)
-    try:
-        debug_level = int(argv[3])
-    except IndexError:
-        debug_level = 0
-    except ValueError:
-        print >> sys.stderr, "Bad arguments. debug_level mut be an int"
-        sys.exit(0)
+        
+if __name__ == "__main__":
+    v = "%prog 0.1 - 2011"
+    u = "usage: %prog [options]  DOMAIN_NAME  IP_INTERNAL_DNS  [options]"
+    parser = OptionParser(usage=u, version=v)
+    parser.add_option("-g", "--graph", dest="graph", action="store_true", help="Generate the graph of the automaton and save it to /tmp. You will need some extra packages. Refer to www.secdev.org/projects/scapy/portability.html. In short: apt-get install graphviz imagemagick python-gnuplot python-pyx", default=False)
+    parser.add_option("-d", "--debug-lvl", dest="debug", type="int", help="Set the debug level, where D is an integer between 0 (quiet) and 5 (very verbose). Default is 0", metavar="D", default=0)
+    parser.add_option("-k", "--keep-alive", dest="keep_alive", type="int", help="After waiting during K seconds, the client sends a keep-alive packet. Default is 30.", metavar="K", default=30)
+    parser.add_option("-t", "--timeout", dest="timeout", type="int", help="After sending a packet to the server, the client waits for the reply up to T seconds. If there is no reply the packet is re-sent. Default is 3.", metavar="T", default=3)
+    parser.add_option("-r", "--retry", dest="retry", type="int", help="After R retries without response, the connection with the server is considered broken. Default is 3.", metavar="R", default=3)
+    (opt, args) = parser.parse_args()
+    if len(args) != 2:
+        parser.error("incorrect number of arguments. Please give the domain name to use and the IP address of the client's internal DNS server")
+    dn = args[0]
+    ip_dns = args[1]
     log_interactive.setLevel(1)
-    automaton = DNScapyClient(domain_name=domain_name, ip_internal_dns=ip_internal_dns, debug=debug_level)
-    #DNScapyClient.graph(target="> /tmp/DNScapy_client.pdf")
+    automaton = Client(dn=dn, ip_dns=ip_dns, debug=opt.debug, keep_alive=opt.keep_alive, timeout=opt.timeout, retry=opt.retry)
+    if opt.graph:
+        Client.graph(target="> /tmp/dnscapy_client.pdf")
     automaton.run()
 
-if __name__ == "__main__":
-    main(sys.argv)

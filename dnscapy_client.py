@@ -30,6 +30,7 @@ from math import ceil
 from random import randint, choice
 from datetime import datetime
 from optparse import OptionParser
+from base64 import b64encode, b64decode
 import os, sys, fcntl, time
 
 class Client(Automaton):
@@ -42,7 +43,7 @@ class Client(Automaton):
         self.retry = retry
         self.mode = mode
 
-    def forge_packet(self, qname, is_connection = False):
+    def forge_packet(self, qname, is_connection = False, rand = True):
         sp = randint(10000,50000)
         i = randint(1, 65535)
         n = randint(0, self.n_max)
@@ -51,7 +52,9 @@ class Client(Automaton):
         else:
             con_id = self.con_id + "."
         if self.mode == "RAND":
-            qtype = choice(["TXT","CNAME"])
+            if rand or self.qtype is None:
+                self.qtype = choice(["TXT","CNAME"])
+            qtype = self.qtype
         else:
             qtype = self.mode
         q = DNSQR(qtype=qtype, qname="{0}.{1}{2}.{3}".format(qname, con_id, str(n), self.dn))
@@ -63,14 +66,12 @@ class Client(Automaton):
         return limit_size
 
     def fragment_data(self, data, limit_size):
-        qname = ""
+        qname = []
         rest = data
         while len(rest) > 0:
             d = rest[:limit_size]
-            qname += '.'.join([d[j:j+self.label_size] for j in range(0, len(d), self.label_size)])
+            qname.append('.'.join([d[j:j+self.label_size] for j in range(0, len(d), self.label_size)]))
             rest = rest[limit_size:]
-            if len(rest) > 0:
-                qname += " " 
         return qname
 
     @ATMT.state(initial=True)
@@ -82,6 +83,7 @@ class Client(Automaton):
         self.qname_max_size = 253
         self.recv_data = ""
         self.was_in_data = False
+        self.qtype = None
         con_request_pkt = self.forge_packet("0", True)
         raise self.SR1(con_request_pkt)
 
@@ -96,9 +98,13 @@ class Client(Automaton):
             rcode = rep[DNS].rcode
             nb_retry += 1
         try:
-            rdata = rep[DNS].an.rdata.split('.')
+            rdata = rep[DNS].an.rdata
         except AttributeError:
             raise self.ERROR("Error: Answer received is not a correct DNS answer (no rdata)")
+        if rep[DNS].an.sprintf("%type%") == "TXT":
+            for i in range(0, len(rdata), 0xff):
+                rdata = rdata[:i] + rdata[i+1:]
+        rdata = rdata.split(".")
         msg_type = rdata[0]
         if msg_type == "0":
             con_id = rdata[1]
@@ -141,15 +147,15 @@ class Client(Automaton):
         self.was_in_data = True
         if msg_type == "2":
             nb_of_pkts = data
-            first_ttm_pkt = self.forge_packet("{0}.3".format(nb_of_pkts))
+            first_ttm_pkt = self.forge_packet("{0}.3".format(nb_of_pkts), rand=False)
             raise self.SR1(first_ttm_pkt)
         elif msg_type == "3":
             self.recv_data += data
             if msg_num == "0":
-                done_pkt = self.forge_packet("4")
+                done_pkt = self.forge_packet("4", rand=False)
                 raise self.SR1(done_pkt)
             else:
-                ttm_pkt = self.forge_packet("{0}.3".format(str(int(msg_num)-1)))
+                ttm_pkt = self.forge_packet("{0}.3".format(str(int(msg_num)-1)), rand=False)
             raise self.SR1(ttm_pkt)
         else:
             raise self.ERROR("Error: Internal Error. Please insult developers.")
@@ -181,7 +187,7 @@ class Client(Automaton):
 
     @ATMT.state()
     def DONE(self):
-        msg = self.recv_data.decode("base64")
+        msg = b64decode(self.recv_data)
         self.recv_data = ""
         sys.stdout.write(msg)
         sys.stdout.flush()
@@ -207,8 +213,7 @@ class Client(Automaton):
                 timeout += sleep_time
                 if timeout >= self.keep_alive:
                     raise self.WYW()
-        frag_input_msg = self.fragment_data(input_msg.encode("base64"), self.calculate_limit_size())
-        self.data_to_send = frag_input_msg.split(" ")
+        self.data_to_send = self.fragment_data(b64encode(input_msg), self.calculate_limit_size())
         raise self.DATA()
 
     @ATMT.state(error=True)

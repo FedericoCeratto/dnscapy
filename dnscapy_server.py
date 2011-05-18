@@ -29,6 +29,7 @@ from scapy.all import IP, UDP, DNS, DNSQR, DNSRR, Raw, send, Automaton, ATMT, St
 from random import randint
 from threading import Thread
 from optparse import OptionParser
+from base64 import b64encode, b64decode
 import socket, sys
 
 CNAME = 5
@@ -49,15 +50,15 @@ class Core(Automaton):
     def forge_packet(self, pkt, rdata="", rcode=0):
         d = pkt[IP].src 
         dp = pkt[UDP].sport
-        i = pkt[DNS].id
+        id = pkt[DNS].id
         q = pkt[DNS].qd    
         t = pkt[DNSQR].qtype
-        qn = pkt[DNSQR].qname
         if t == TXT:
-            rdata = str(len(rdata)).encode("hex") + rdata
-        an = (None, DNSRR(rrname=qn, type=t, rdata=rdata, ttl=60))[rcode == 0]        
+            for i in range(0, len(rdata), 0xff+1):
+                rdata = rdata[:i] + chr(len(rdata[i:i+0xff])) + rdata[i:]     
+        an = (None, DNSRR(rrname=self.dn, type=t, rdata=rdata, ttl=60))[rcode == 0]        
         ns = DNSRR(rrname=self.dn, type="NS", ttl=3600, rdata="ns."+self.dn)
-        return IP(dst=d)/UDP(dport=dp)/DNS(id=i, qr=1, rd=1, ra=1, rcode=rcode, qd=q, an=an, ns=ns)
+        return IP(dst=d)/UDP(dport=dp)/DNS(id=id, qr=1, rd=1, ra=1, rcode=rcode, qd=q, an=an, ns=ns)
 
 
 class Parent(Core):
@@ -159,7 +160,7 @@ class Child(Core):
             return False
     
     def calculate_limit_size(self, pkt):
-        s = self.pkt_max_size - len(pkt[DNS]) - 2*len(DNSRR()) - len(pkt[DNS].qd.qname) - 2*len(self.dn) - len("ns.")
+        s = self.pkt_max_size - len(pkt[DNS]) - 2*len(DNSRR()) - 3*len(self.dn) - len("ns.") - 10
         if pkt[DNSQR].qtype == TXT:
             max_size = 512
             s -= len(str(s))
@@ -206,7 +207,7 @@ class Child(Core):
             raise self.TICKLING()
         s = self.calculate_limit_size(self.first_pkt)
         qtype = self.first_pkt[DNSQR].qtype 
-        frag_msg = self.fragment_data(ssh_msg.encode("base64"), s, qtype)
+        frag_msg = self.fragment_data(b64encode(ssh_msg), s, qtype)
         if len(frag_msg) == 1:
             pkt = Core.forge_packet(self, self.first_pkt, "0.{0}.0.{1}".format(self.con_id, frag_msg[0]))
         else:
@@ -272,12 +273,12 @@ class Child(Core):
         self.last_wanted = None
         if self.is_first_wyw_pkt:
             self.iwt_pkt = Core.forge_packet(self, pkt,"4")
-            ssh_request = Raw(self.recv_data.decode("base64"))
+            ssh_request = Raw(b64decode(self.recv_data))
             ssh_reply = self.stream.sr1(ssh_request, timeout=1, verbose=0)
             if ssh_reply is not None:
                 qtype = pkt[DNSQR].qtype
                 s = self.calculate_limit_size(pkt)
-                self.frag_reply = self.fragment_data(ssh_reply.load.encode("base64"), s, qtype)
+                self.frag_reply = self.fragment_data(b64encode(ssh_reply.load), s, qtype)
                 self.iwt_pkt = Core.forge_packet(self, pkt,"2." + str(len(self.frag_reply)))
                 self.is_first_wyw_pkt = False
             send(self.iwt_pkt, verbose=0)

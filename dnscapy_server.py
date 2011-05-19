@@ -158,12 +158,17 @@ class Child(Core):
 
     def master_filter(self, pkt):        
         if (Core.master_filter(self, pkt) and pkt[IP].src == self.ip_client):
-            self.qname = Core.parse_qname(self, pkt)    
-            if ( len(self.qname) >= 4 and self.qname[-2].isdigit() and self.qname[-3] == self.con_id):
-                self.msg_type = self.qname[-4]
-                return True
-        else: 
-            return False
+            qname = Core.parse_qname(self, pkt)    
+            if len(qname) >= 4:
+                if qname[-2].isdigit() and qname[-3] == self.con_id:
+                    self.msg_type = qname[-4]
+                    if len(qname) == 4 and self.msg_type in [_IWT]:
+                        return True
+                    if len(qname) > 4 and self.msg_type in [_ACK, _DATA, _DONE]:
+                        self.arg = qname[-5]
+                        self.payload = qname[:-5] 
+                        return True
+        return False
     
     def calculate_limit_size(self, pkt):
         s = self.pkt_max_size - len(pkt[DNS]) - 2*len(DNSRR()) - 3*len(self.dn) - len("ns.") - 10
@@ -191,12 +196,13 @@ class Child(Core):
         self.label_size = 63
         self.qname_max_size = 253
         self.pkt_max_size = 512
-        self.recv_data = ""
+        self.recv_data = {}
         self.wanted = None
         self.last_wanted = None
         self.last_recv = None
         self.ip_client = self.first_pkt[IP].src
         self.is_first_wyw_pkt = True
+        self.iwt_pkt = None
         raise self.TICKLING()
 
     @ATMT.state()
@@ -213,11 +219,11 @@ class Child(Core):
             raise self.TICKLING()
         s = self.calculate_limit_size(self.first_pkt)
         qtype = self.first_pkt[DNSQR].qtype 
-        frag_msg = self.fragment_data(b64encode(ssh_msg), s, qtype)
-        if len(frag_msg) == 1:
-            pkt = Core.forge_packet(self, self.first_pkt, "{0}.{1}.0.{2}".format(_CON, self.con_id, frag_msg[0]))
+        self.frag_reply = self.fragment_data(b64encode(ssh_msg), s, qtype)
+        if len(self.frag_reply) == 1:
+            pkt = Core.forge_packet(self, self.first_pkt, "{0}.{1}.0.{2}".format(_CON, self.con_id, self.frag_reply[0]))
         else:
-            pkt = Core.forge_packet(self, self.first_pkt, "{0}.{1}.{2}".format(_CON, self.con_id, str(len(frag_msg)-1)))
+            pkt = Core.forge_packet(self, self.first_pkt, "{0}.{1}.{2}".format(_CON, self.con_id, str(len(self.frag_reply)-1)))
         send(pkt, verbose=0)
         raise self.WAITING()
 
@@ -232,7 +238,7 @@ class Child(Core):
     @ATMT.receive_condition(WAITING)
     def data_pkt(self, pkt):
         if self.msg_type == _ACK:
-            pkt_nb = self.qname[-5]
+            pkt_nb = self.arg
             if pkt_nb.isdigit():
                 raise self.DATA_RECEPTION(pkt, int(pkt_nb))
                 
@@ -244,14 +250,16 @@ class Child(Core):
     @ATMT.receive_condition(WAITING)
     def ttm_pkt(self, pkt):
         if self.msg_type == _DATA:
-            asked_pkt = self.qname[-5]
+            asked_pkt = self.arg
             if asked_pkt.isdigit():
                 raise self.DATA_EMISSION(pkt, int(asked_pkt))
 
     @ATMT.receive_condition(WAITING)
     def done_pkt(self, pkt):
         if self.msg_type == _DONE:
-            raise self.DONE(pkt)
+            code = self.arg
+            if code == _ACK or code == _DATA:
+                raise self.DONE(pkt, code)
 
     @ATMT.state()
     def DATA_RECEPTION(self, pkt, pkt_nb):
@@ -261,7 +269,7 @@ class Child(Core):
             ack_pkt = Core.forge_packet(self, pkt, "{0}.{1}".format(_ACK, str(pkt_nb)))
             send(ack_pkt, verbose=0)
         elif pkt_nb == self.wanted:
-            self.recv_data += "".join(self.qname[:-5])
+            self.recv_data[pkt_nb] = "".join(self.payload)
             self.last_recv = pkt_nb
             if self.wanted > 0:
                 self.wanted -= 1
@@ -275,22 +283,18 @@ class Child(Core):
         After receiving a WYW (What You Want) pkt from the client, the server
         says how many DNS pkts he needs to send the reply
         """
-        self.wanted = None
-        self.last_wanted = None
-        if self.is_first_wyw_pkt:
-            self.iwt_pkt = Core.forge_packet(self, pkt,_DONE)
-            ssh_request = Raw(b64decode(self.recv_data))
-            ssh_reply = self.stream.sr1(ssh_request, timeout=0.01, verbose=0)
-            if ssh_reply is not None:
+        if self.iwt_pkt is not None:
+            send(self.iwt_pkt, verbose=0)
+        else:
+            ssh_reply = self.stream.sniff(count=1, timeout=0.1)
+            iwt_pkt = Core.forge_packet(self, pkt, _DONE)
+            if len(ssh_reply) > 0:
                 qtype = pkt[DNSQR].qtype
                 s = self.calculate_limit_size(pkt)
-                self.frag_reply = self.fragment_data(b64encode(ssh_reply.load), s, qtype)
+                self.frag_reply = self.fragment_data(b64encode(ssh_reply[0].load), s, qtype)
                 self.iwt_pkt = Core.forge_packet(self, pkt,"{0}.{1}".format(_IWT, str(len(self.frag_reply))))
-                self.is_first_wyw_pkt = False
-            send(self.iwt_pkt, verbose=0)
-            self.recv_data = ""
-        else:
-            send(self.iwt_pkt, verbose=0)
+                iwt_pkt = self.iwt_pkt
+            send(iwt_pkt, verbose=0)
         raise self.WAITING()
 
     @ATMT.state()
@@ -301,8 +305,16 @@ class Child(Core):
         raise self.WAITING()
 
     @ATMT.state()
-    def DONE(self, pkt):
-        self.is_first_wyw_pkt = True
+    def DONE(self, pkt, code):
+        if code == _ACK:
+            self.wanted = None
+            self.last_wanted = None
+            d = "".join(self.recv_data.values())
+            ssh_request = Raw(b64decode(d))
+            self.stream.send(ssh_request)
+            self.recv_data.clear()
+        elif code == _DATA:
+            self.iwt_pkt = None
         send(Core.forge_packet(self, pkt, _DONE), verbose=0)
         raise self.WAITING()
  
@@ -312,7 +324,7 @@ class Child(Core):
 
         
 if __name__ == "__main__":
-    v = "%prog 0.2 - 2011"
+    v = "%prog 0.1 - 2011"
     u = "usage: %prog [options]  DOMAIN_NAME  EXTERNAL_IP  [options]"
     parser = OptionParser(usage=u, version=v)
     parser.add_option("-g", "--graph", dest="graph", action="store_true", help="Generate the graph of the automaton, save it to /tmp and exit. You will need some extra packages. Refer to www.secdev.org/projects/scapy/portability.html. In short: apt-get install graphviz imagemagick python-gnuplot python-pyx", default=False)

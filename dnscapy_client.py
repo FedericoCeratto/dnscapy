@@ -88,7 +88,7 @@ class Client(Automaton):
         self.label_size = 63
         self.qname_max_size = 253
         self.recv_data = ""
-        self.was_in_data = False
+        self.wyw_token = 0
         self.qtype = None
         con_request_pkt = self.forge_packet(_CON, True)
         raise self.SR1(con_request_pkt)
@@ -130,16 +130,23 @@ class Client(Automaton):
             recv_data = "".join(rdata[2:])
             raise self.TTM(msg_type, recv_data, pkt_received_nb)
         elif msg_type == _DONE:
-            raise self.DONE()
+            if self.wyw_token > 0:
+                self.wyw_token -= 1
+                raise self.WYW()
+            else:
+                raise self.STDIN_LISTENING()
         else:
             raise self.ERROR("Error: Unknown message type")
 
     @ATMT.state()
     def CON(self, con_id, nb_msg_needed, recv_data):
+        self.wyw_token = 2
         self.con_id = con_id
         if nb_msg_needed == "0":
-            self.recv_data = recv_data
-            done_pkt = self.forge_packet(_DONE)
+            msg = b64decode(recv_data)
+            sys.stdout.write(msg)
+            sys.stdout.flush()
+            done_pkt = self.forge_packet("{0}.{1}".format(_TTM, _DONE))
             raise self.SR1(done_pkt)
         else:
             first_ttm_pkt = self.forge_packet("{0}.{1}".format(nb_msg_needed, _TTM))
@@ -150,7 +157,7 @@ class Client(Automaton):
         """TTM (Talk To Me) state of the automaton.
         Sending empty packets to receive data from the server.
         """
-        self.was_in_data = True
+        self.wyw_token = 1
         if msg_type == _WYW:
             nb_of_pkts = data
             first_ttm_pkt = self.forge_packet("{0}.{1}".format(nb_of_pkts, _TTM), rand=False)
@@ -158,7 +165,11 @@ class Client(Automaton):
         elif msg_type == _TTM:
             self.recv_data += data
             if msg_num == "0":
-                done_pkt = self.forge_packet(_DONE, rand=False)
+                msg = b64decode(self.recv_data)
+                self.recv_data = ""
+                sys.stdout.write(msg)
+                sys.stdout.flush()
+                done_pkt = self.forge_packet("{0}.{1}".format(_TTM, _DONE))
                 raise self.SR1(done_pkt)
             else:
                 ttm_pkt = self.forge_packet("{0}.{1}".format(str(int(msg_num)-1), _TTM), rand=False)
@@ -168,19 +179,20 @@ class Client(Automaton):
 
     @ATMT.state()
     def DATA(self, ack_nb=None):
-        self.was_in_data = True
+        self.wyw_token = 3
         if ack_nb is None:
-            first_pkt_of_data = self.forge_packet("{0}.{1}.{2}".format(self.data_to_send[0], str(len(self.data_to_send) - 1), _DATA))
+            first_pkt_of_data = self.forge_packet("{0}.{1}.{2}".format(self.data_to_send[-1], str(len(self.data_to_send) - 1), _DATA))
             raise self.SR1(first_pkt_of_data)
         elif ack_nb == "0":
             self.data_to_send = []
-            raise self.WYW()
+            done_pkt = self.forge_packet("{0}.{1}".format(_DATA, _DONE))
+            raise self.SR1(done_pkt)
         elif ack_nb == str(len(self.data_to_send) - 1):
-            self.data_to_send = self.data_to_send[1:]
-            pkt_of_data = self.forge_packet("{0}.{1}.{2}".format(self.data_to_send[0], str(len(self.data_to_send) - 1), _DATA))
+            self.data_to_send = self.data_to_send[:-1]
+            pkt_of_data = self.forge_packet("{0}.{1}.{2}".format(self.data_to_send[-1], str(len(self.data_to_send) - 1), _DATA))
             raise self.SR1(pkt_of_data)
         else:
-            pkt_of_data = self.forge_packet(self.data_to_send[0])
+            pkt_of_data = self.forge_packet(self.data_to_send[-1])
             raise self.SR1(pkt_of_data)
 
     @ATMT.state()
@@ -190,17 +202,6 @@ class Client(Automaton):
         """
         wyw_pkt = self.forge_packet(_WYW)
         raise self.SR1(wyw_pkt)
-
-    @ATMT.state()
-    def DONE(self):
-        msg = b64decode(self.recv_data)
-        self.recv_data = ""
-        sys.stdout.write(msg)
-        sys.stdout.flush()
-        if self.was_in_data:
-            self.was_in_data = False    
-            raise self.WYW()
-        raise self.STDIN_LISTENING()
 
     @ATMT.state()
     def STDIN_LISTENING(self):

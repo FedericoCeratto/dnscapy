@@ -33,7 +33,13 @@ from base64 import b64encode, b64decode
 import socket, sys
 
 CNAME = 5
-TXT = 16
+TXT = 16  
+
+_CON = "a"
+_ACK = "b"
+_IWT = "c"
+_DATA = "d"
+_DONE = "e"
 
 class Core(Automaton):
     dn = "" 
@@ -130,7 +136,7 @@ class Parent(Core):
 
     @ATMT.receive_condition(WAITING)
     def connection_request(self, pkt):
-        if len(self.qname) >=3 and self.qname[-3] == "0":
+        if len(self.qname) >=3 and self.qname[-3] == _CON:
             raise self.WAITING().action_parameters(pkt)
 
     @ATMT.action(connection_request)
@@ -209,9 +215,9 @@ class Child(Core):
         qtype = self.first_pkt[DNSQR].qtype 
         frag_msg = self.fragment_data(b64encode(ssh_msg), s, qtype)
         if len(frag_msg) == 1:
-            pkt = Core.forge_packet(self, self.first_pkt, "0.{0}.0.{1}".format(self.con_id, frag_msg[0]))
+            pkt = Core.forge_packet(self, self.first_pkt, "{0}.{1}.0.{2}".format(_CON, self.con_id, frag_msg[0]))
         else:
-            pkt = Core.forge_packet(self, self.first_pkt, "0.{0}.{1}".format(self.con_id, str(len(frag_msg)-1)))
+            pkt = Core.forge_packet(self, self.first_pkt, "{0}.{1}.{2}".format(_CON, self.con_id, str(len(frag_msg)-1)))
         send(pkt, verbose=0)
         raise self.WAITING()
 
@@ -225,26 +231,26 @@ class Child(Core):
 
     @ATMT.receive_condition(WAITING)
     def data_pkt(self, pkt):
-        if self.msg_type == "1":
+        if self.msg_type == _ACK:
             pkt_nb = self.qname[-5]
             if pkt_nb.isdigit():
                 raise self.DATA_RECEPTION(pkt, int(pkt_nb))
                 
     @ATMT.receive_condition(WAITING)
     def iwt_pkt(self, pkt):
-        if self.msg_type == "2":
+        if self.msg_type == _IWT:
             raise self.IWT(pkt)
 
     @ATMT.receive_condition(WAITING)
     def ttm_pkt(self, pkt):
-        if self.msg_type == "3":
+        if self.msg_type == _DATA:
             asked_pkt = self.qname[-5]
             if asked_pkt.isdigit():
                 raise self.DATA_EMISSION(pkt, int(asked_pkt))
 
     @ATMT.receive_condition(WAITING)
     def done_pkt(self, pkt):
-        if self.msg_type == "4":
+        if self.msg_type == _DONE:
             raise self.DONE(pkt)
 
     @ATMT.state()
@@ -252,14 +258,14 @@ class Child(Core):
         if self.wanted is None:
             self.wanted = pkt_nb
         if pkt_nb == self.last_wanted:
-            ack_pkt = Core.forge_packet(self, pkt, "1." + str(pkt_nb))
+            ack_pkt = Core.forge_packet(self, pkt, "{0}.{1}".format(_ACK, str(pkt_nb)))
             send(ack_pkt, verbose=0)
         elif pkt_nb == self.wanted:
             self.recv_data += "".join(self.qname[:-5])
             self.last_recv = pkt_nb
             if self.wanted > 0:
                 self.wanted -= 1
-            ack_pkt = Core.forge_packet(self, pkt, "1." + str(pkt_nb))
+            ack_pkt = Core.forge_packet(self, pkt, "{0}.{1}".format(_ACK, str(pkt_nb)))
             send(ack_pkt, verbose=0)
         raise self.WAITING()
 
@@ -272,14 +278,14 @@ class Child(Core):
         self.wanted = None
         self.last_wanted = None
         if self.is_first_wyw_pkt:
-            self.iwt_pkt = Core.forge_packet(self, pkt,"4")
+            self.iwt_pkt = Core.forge_packet(self, pkt,_DONE)
             ssh_request = Raw(b64decode(self.recv_data))
-            ssh_reply = self.stream.sr1(ssh_request, timeout=1, verbose=0)
+            ssh_reply = self.stream.sr1(ssh_request, timeout=0.01, verbose=0)
             if ssh_reply is not None:
                 qtype = pkt[DNSQR].qtype
                 s = self.calculate_limit_size(pkt)
                 self.frag_reply = self.fragment_data(b64encode(ssh_reply.load), s, qtype)
-                self.iwt_pkt = Core.forge_packet(self, pkt,"2." + str(len(self.frag_reply)))
+                self.iwt_pkt = Core.forge_packet(self, pkt,"{0}.{1}".format(_IWT, str(len(self.frag_reply))))
                 self.is_first_wyw_pkt = False
             send(self.iwt_pkt, verbose=0)
             self.recv_data = ""
@@ -290,14 +296,14 @@ class Child(Core):
     @ATMT.state()
     def DATA_EMISSION(self, pkt, asked_pkt):
         if asked_pkt <= len(self.frag_reply):
-            data_pkt = Core.forge_packet(self, pkt, "3.{0}.{1}".format(str(asked_pkt), self.frag_reply[-(asked_pkt+1)]))
+            data_pkt = Core.forge_packet(self, pkt, "{0}.{1}.{2}".format(_DATA, str(asked_pkt), self.frag_reply[-(asked_pkt+1)]))
             send(data_pkt, verbose=0)
         raise self.WAITING()
 
     @ATMT.state()
     def DONE(self, pkt):
         self.is_first_wyw_pkt = True
-        send(Core.forge_packet(self, pkt, "4"), verbose=0)
+        send(Core.forge_packet(self, pkt, _DONE), verbose=0)
         raise self.WAITING()
  
     @ATMT.state(final=True)

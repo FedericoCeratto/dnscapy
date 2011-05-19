@@ -33,8 +33,14 @@ from optparse import OptionParser
 from base64 import b64encode, b64decode
 import os, sys, time, select
 
+_CON = "a"
+_DATA = "b"
+_WYW = "c"
+_TTM = "d"
+_DONE = "e"
+
 class Client(Automaton):
-    def parse_args(self, dn, ip_dns, debug=0, keep_alive=10, timeout=3, retry=3, mode="CNAME"):
+    def parse_args(self, dn, ip_dns, debug=0, keep_alive=5, timeout=3, retry=3, mode="CNAME"):
         Automaton.parse_args(self, debug)
         self.dn = dn
         self.ip_dns = ip_dns
@@ -84,7 +90,7 @@ class Client(Automaton):
         self.recv_data = ""
         self.was_in_data = False
         self.qtype = None
-        con_request_pkt = self.forge_packet("0", True)
+        con_request_pkt = self.forge_packet(_CON, True)
         raise self.SR1(con_request_pkt)
 
     @ATMT.state()
@@ -106,24 +112,24 @@ class Client(Automaton):
                 rdata = rdata[:i] + rdata[i+1:]
         rdata = rdata.split(".")
         msg_type = rdata[0]
-        if msg_type == "0":
+        if msg_type == _CON:
             con_id = rdata[1]
             nb_msg_needed = rdata[2]
             recv_data = None
             if nb_msg_needed == "0":
                 recv_data = "".join(rdata[3:])
             raise self.CON(con_id, nb_msg_needed, recv_data)
-        elif msg_type == "1":
+        elif msg_type == _DATA:
             pkt_nb_ack = rdata[1]
             raise self.DATA(pkt_nb_ack)
-        elif msg_type == "2":
+        elif msg_type == _WYW:
             nb_pkts = rdata[1]
             raise self.TTM(msg_type, str(int(nb_pkts)-1))
-        elif msg_type == "3":
+        elif msg_type == _TTM:
             pkt_received_nb = rdata[1]
             recv_data = "".join(rdata[2:])
             raise self.TTM(msg_type, recv_data, pkt_received_nb)
-        elif msg_type == "4":
+        elif msg_type == _DONE:
             raise self.DONE()
         else:
             raise self.ERROR("Error: Unknown message type")
@@ -133,10 +139,10 @@ class Client(Automaton):
         self.con_id = con_id
         if nb_msg_needed == "0":
             self.recv_data = recv_data
-            done_pkt = self.forge_packet("4")
+            done_pkt = self.forge_packet(_DONE)
             raise self.SR1(done_pkt)
         else:
-            first_ttm_pkt = self.forge_packet("{0}.3".format(nb_msg_needed))
+            first_ttm_pkt = self.forge_packet("{0}.{1}".format(nb_msg_needed, _TTM))
             raise self.SR1(first_ttm_pkt)
 
     @ATMT.state()
@@ -145,17 +151,17 @@ class Client(Automaton):
         Sending empty packets to receive data from the server.
         """
         self.was_in_data = True
-        if msg_type == "2":
+        if msg_type == _WYW:
             nb_of_pkts = data
-            first_ttm_pkt = self.forge_packet("{0}.3".format(nb_of_pkts), rand=False)
+            first_ttm_pkt = self.forge_packet("{0}.{1}".format(nb_of_pkts, _TTM), rand=False)
             raise self.SR1(first_ttm_pkt)
-        elif msg_type == "3":
+        elif msg_type == _TTM:
             self.recv_data += data
             if msg_num == "0":
-                done_pkt = self.forge_packet("4", rand=False)
+                done_pkt = self.forge_packet(_DONE, rand=False)
                 raise self.SR1(done_pkt)
             else:
-                ttm_pkt = self.forge_packet("{0}.3".format(str(int(msg_num)-1)), rand=False)
+                ttm_pkt = self.forge_packet("{0}.{1}".format(str(int(msg_num)-1), _TTM), rand=False)
             raise self.SR1(ttm_pkt)
         else:
             raise self.ERROR("Error: Internal Error. Please insult developers.")
@@ -164,14 +170,14 @@ class Client(Automaton):
     def DATA(self, ack_nb=None):
         self.was_in_data = True
         if ack_nb is None:
-            first_pkt_of_data = self.forge_packet("{0}.{1}.1".format(self.data_to_send[0], str(len(self.data_to_send) - 1)))
+            first_pkt_of_data = self.forge_packet("{0}.{1}.{2}".format(self.data_to_send[0], str(len(self.data_to_send) - 1), _DATA))
             raise self.SR1(first_pkt_of_data)
         elif ack_nb == "0":
             self.data_to_send = []
             raise self.WYW()
         elif ack_nb == str(len(self.data_to_send) - 1):
             self.data_to_send = self.data_to_send[1:]
-            pkt_of_data = self.forge_packet("{0}.{1}.1".format(self.data_to_send[0], str(len(self.data_to_send) - 1)))
+            pkt_of_data = self.forge_packet("{0}.{1}.{2}".format(self.data_to_send[0], str(len(self.data_to_send) - 1), _DATA))
             raise self.SR1(pkt_of_data)
         else:
             pkt_of_data = self.forge_packet(self.data_to_send[0])
@@ -182,7 +188,7 @@ class Client(Automaton):
         """WYW (What do You Want) state of the automaton.
         Asking if the server wants to say something
         """
-        wyw_pkt = self.forge_packet("2")
+        wyw_pkt = self.forge_packet(_WYW)
         raise self.SR1(wyw_pkt)
 
     @ATMT.state()
@@ -217,7 +223,7 @@ if __name__ == "__main__":
     parser.add_option("-m", "--mode", dest="mode", help="Set the DNS field use for the tunneling. Possible values are CNAME, TXT and RAND. TXT offers better speed but CNAME offers better compatibility. RAND mean that both TXT and CNAME are randomly used. Default is CNAME.", default="CNAME")
     parser.add_option("-g", "--graph", dest="graph", action="store_true", help="Generate the graph of the automaton, save it to /tmp and exit. You will need some extra packages. Refer to www.secdev.org/projects/scapy/portability.html. In short: apt-get install graphviz imagemagick python-gnuplot python-pyx", default=False)
     parser.add_option("-d", "--debug-lvl", dest="debug", type="int", help="Set the debug level, where D is an integer between 0 (quiet) and 5 (very verbose). Default is 0", metavar="D", default=0)
-    parser.add_option("-k", "--keep-alive", dest="keep_alive", type="int", help="After waiting during K seconds, the client sends a keep-alive packet. Default is 10.", metavar="K", default=10)
+    parser.add_option("-k", "--keep-alive", dest="keep_alive", type="int", help="After waiting during K seconds, the client sends a keep-alive packet. Default is 5.", metavar="K", default=5)
     parser.add_option("-t", "--timeout", dest="timeout", type="int", help="After sending a packet to the server, the client waits for the reply up to T seconds. If there is no reply the packet is re-sent. Default is 3.", metavar="T", default=3)
     parser.add_option("-r", "--retry", dest="retry", type="int", help="After R retries without response, the connection with the server is considered broken. Default is 3.", metavar="R", default=3)
     (opt, args) = parser.parse_args()

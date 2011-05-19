@@ -217,7 +217,7 @@ class Client(Automaton):
         print >> sys.stderr, "Error message: ", error_msg
         
 if __name__ == "__main__":
-    v = "%prog 0.1 - 2011"
+    v = "%prog 0.2 - 2011"
     u = "usage: %prog [options]  DOMAIN_NAME  IP_INTERNAL_DNS  [options]"
     parser = OptionParser(usage=u, version=v)
     parser.add_option("-m", "--mode", dest="mode", help="Set the DNS field use for the tunneling. Possible values are CNAME, TXT and RAND. TXT offers better speed but CNAME offers better compatibility. RAND mean that both TXT and CNAME are randomly used. Default is CNAME.", default="CNAME")

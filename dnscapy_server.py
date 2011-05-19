@@ -20,7 +20,7 @@
 #               and Pascal Mazon <pascal.mazon@gmail.com>
 # DNScapy uses Scapy, wrote by Philippe Biondi <phil@secdev.org>
 
-### DISCLAMER ###
+### DISCLAIMER ###
 # We are not responsible for misuse of DNScapy
 # Making a DNS tunnel to bypass a security policy may be forbidden
 # Do it at your own risks

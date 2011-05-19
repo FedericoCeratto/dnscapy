@@ -20,7 +20,7 @@
 #               and Pascal Mazon <pascal.mazon@gmail.com>
 # DNScapy uses Scapy, wrote by Philippe Biondi <phil@secdev.org>
 
-### DISCLAMER ###
+### DISCLAIMER ###
 # We are not responsible for misuse of DNScapy
 # Making a DNS tunnel to bypass a security policy may be forbidden
 # Do it at your own risks
@@ -31,10 +31,10 @@ from random import randint, choice
 from datetime import datetime
 from optparse import OptionParser
 from base64 import b64encode, b64decode
-import os, sys, fcntl, time
+import os, sys, time, select
 
 class Client(Automaton):
-    def parse_args(self, dn, ip_dns, debug=0, keep_alive=30, timeout=3, retry=3, mode="CNAME"):
+    def parse_args(self, dn, ip_dns, debug=0, keep_alive=10, timeout=3, retry=3, mode="CNAME"):
         Automaton.parse_args(self, debug)
         self.dn = dn
         self.ip_dns = ip_dns
@@ -198,23 +198,13 @@ class Client(Automaton):
 
     @ATMT.state()
     def STDIN_LISTENING(self):
-        file_descriptor = sys.stdin.fileno()
-        filel = fcntl.fcntl(file_descriptor, fcntl.F_GETFL)
-        fcntl.fcntl(file_descriptor, fcntl.F_SETFL, filel | os.O_NONBLOCK)
-
-        input_msg = ""
-        timeout = 0
-        sleep_time = 0.1
-        while input_msg == "":
-            try:
-                input_msg = sys.stdin.read()
-            except:
-                time.sleep(sleep_time)
-                timeout += sleep_time
-                if timeout >= self.keep_alive:
-                    raise self.WYW()
-        self.data_to_send = self.fragment_data(b64encode(input_msg), self.calculate_limit_size())
-        raise self.DATA()
+        a,b,c = select.select([sys.stdin],[],[],self.keep_alive)
+        if len(a) > 0:
+            input_msg = os.read(a[0].fileno(),20000)
+            self.data_to_send = self.fragment_data(b64encode(input_msg), self.calculate_limit_size())
+            raise self.DATA()
+        else:
+            raise self.WYW()
 
     @ATMT.state(error=True)
     def ERROR(self, error_msg):
@@ -227,7 +217,7 @@ if __name__ == "__main__":
     parser.add_option("-m", "--mode", dest="mode", help="Set the DNS field use for the tunneling. Possible values are CNAME, TXT and RAND. TXT offers better speed but CNAME offers better compatibility. RAND mean that both TXT and CNAME are randomly used. Default is CNAME.", default="CNAME")
     parser.add_option("-g", "--graph", dest="graph", action="store_true", help="Generate the graph of the automaton, save it to /tmp and exit. You will need some extra packages. Refer to www.secdev.org/projects/scapy/portability.html. In short: apt-get install graphviz imagemagick python-gnuplot python-pyx", default=False)
     parser.add_option("-d", "--debug-lvl", dest="debug", type="int", help="Set the debug level, where D is an integer between 0 (quiet) and 5 (very verbose). Default is 0", metavar="D", default=0)
-    parser.add_option("-k", "--keep-alive", dest="keep_alive", type="int", help="After waiting during K seconds, the client sends a keep-alive packet. Default is 30.", metavar="K", default=30)
+    parser.add_option("-k", "--keep-alive", dest="keep_alive", type="int", help="After waiting during K seconds, the client sends a keep-alive packet. Default is 10.", metavar="K", default=10)
     parser.add_option("-t", "--timeout", dest="timeout", type="int", help="After sending a packet to the server, the client waits for the reply up to T seconds. If there is no reply the packet is re-sent. Default is 3.", metavar="T", default=3)
     parser.add_option("-r", "--retry", dest="retry", type="int", help="After R retries without response, the connection with the server is considered broken. Default is 3.", metavar="R", default=3)
     (opt, args) = parser.parse_args()

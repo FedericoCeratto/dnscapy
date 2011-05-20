@@ -40,6 +40,7 @@ _ACK = "b"
 _IWT = "c"
 _DATA = "d"
 _DONE = "e"
+_FAST = "f"
 
 class Core(Automaton):
     dn = "" 
@@ -47,7 +48,8 @@ class Core(Automaton):
         return pkt[DNSQR].qname.rsplit(self.dn, 1)[0].split(".")
         
     def master_filter(self, pkt):
-        return (self.state.state == "WAITING" and
+        return ((self.state.state == "WAITING" or
+                self.state.state == "DATA_RECEPTION") and
                 IP in pkt and UDP in pkt and
                 pkt[UDP].dport == 53 and DNS in pkt and
                 pkt[DNS].qr == 0 and DNSQR in pkt and
@@ -190,6 +192,25 @@ class Child(Core):
         elif qtype == TXT:
             qname = [data[i:i+limit_size] for i in range(0, len(data), limit_size)]
         return qname
+        
+    def optimize(self, l):
+        """ [1,2,4,12,7,11,3,14,13] => '1-4.7.11-14' """
+        l.sort()
+        temp = [[l[0]]]
+        result = []
+        j = 0
+        for i in range(1,len(l)):
+            if l[i] == l[i-1]+1:
+                temp[j] += [l[i]]
+            else:
+                temp.append([l[i]])
+                j += 1
+        for r in temp:
+            if len(r) > 1:
+                result.append("{0}-{1}".format(r[0],r[-1]))
+            else:
+                result.append(str(r[0]))
+        return ".".join(result)
           
     @ATMT.state(initial=True)
     def START(self):
@@ -234,7 +255,7 @@ class Child(Core):
 
     @ATMT.receive_condition(WAITING)
     def data_pkt(self, pkt):
-        if self.msg_type == _ACK:
+        if self.msg_type in [_ACK, _FAST]:
             pkt_nb = self.arg
             if pkt_nb.isdigit():
                 raise self.DATA_RECEPTION(pkt, int(pkt_nb))
@@ -262,7 +283,28 @@ class Child(Core):
     def DATA_RECEPTION(self, pkt, pkt_nb):
         if not self.recv_data.has_key(pkt_nb):
             self.recv_data[pkt_nb] = "".join(self.payload)
-        ack_pkt = Core.forge_packet(self, pkt, "{0}.{1}".format(_ACK, pkt_nb))
+        if self.msg_type == _ACK:
+            ack_pkt = Core.forge_packet(self, pkt, "{0}.{1}".format(_ACK, pkt_nb))
+            send(ack_pkt, verbose=0)
+            raise self.WAITING()
+        elif self.msg_type == _FAST:
+            self.fast_pkt = pkt
+            self.to_ack = [str(pkt_nb)]
+        
+    @ATMT.receive_condition(DATA_RECEPTION)
+    def got_data(self, pkt):
+        if self.msg_type == _FAST:
+            pkt_nb = self.arg
+            if pkt_nb.isdigit():
+                if not self.recv_data.has_key(pkt_nb):
+                    self.recv_data[pkt_nb] = "".join(self.payload)
+                self.to_ack.append(str(pkt_nb))    
+    
+    @ATMT.timeout(DATA_RECEPTION, 0.5)
+    def ack(self):
+        #TODO check the limit size
+        l = self.optimize(self.to_ack)
+        ack_pkt = Core.forge_packet(self.fast_pkt, "{0}.{1}".format(_FAST, l))
         send(ack_pkt, verbose=0)
         raise self.WAITING()
 

@@ -38,6 +38,7 @@ _DATA = "b"
 _WYW = "c"
 _TTM = "d"
 _DONE = "e"
+_FAST = "f"
 
 class Client(Automaton):
     def parse_args(self, dn, ip_dns, debug=0, keep_alive=5, timeout=3, retry=3, mode="CNAME"):

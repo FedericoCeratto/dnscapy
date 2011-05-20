@@ -263,18 +263,10 @@ class Child(Core):
 
     @ATMT.state()
     def DATA_RECEPTION(self, pkt, pkt_nb):
-        if self.wanted is None:
-            self.wanted = pkt_nb
-        if pkt_nb == self.last_wanted:
-            ack_pkt = Core.forge_packet(self, pkt, "{0}.{1}".format(_ACK, str(pkt_nb)))
-            send(ack_pkt, verbose=0)
-        elif pkt_nb == self.wanted:
+        if not self.recv_data.has_key(pkt_nb):
             self.recv_data[pkt_nb] = "".join(self.payload)
-            self.last_recv = pkt_nb
-            if self.wanted > 0:
-                self.wanted -= 1
-            ack_pkt = Core.forge_packet(self, pkt, "{0}.{1}".format(_ACK, str(pkt_nb)))
-            send(ack_pkt, verbose=0)
+        ack_pkt = Core.forge_packet(self, pkt, "{0}.{1}".format(_ACK, pkt_nb))
+        send(ack_pkt, verbose=0)
         raise self.WAITING()
 
     @ATMT.state()

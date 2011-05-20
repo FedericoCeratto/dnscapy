@@ -197,9 +197,6 @@ class Child(Core):
         self.qname_max_size = 253
         self.pkt_max_size = 512
         self.recv_data = {}
-        self.wanted = None
-        self.last_wanted = None
-        self.last_recv = None
         self.ip_client = self.first_pkt[IP].src
         self.is_first_wyw_pkt = True
         self.iwt_pkt = None
@@ -299,15 +296,15 @@ class Child(Core):
     @ATMT.state()
     def DONE(self, pkt, code):
         if code == _ACK:
-            self.wanted = None
-            self.last_wanted = None
-            d = "".join(self.recv_data.values())
-            ssh_request = Raw(b64decode(d))
-            self.stream.send(ssh_request)
-            self.recv_data.clear()
+            if self.recv_data.keys() == range(0,len(self.recv_data)):
+                d = "".join(self.recv_data.values())
+                ssh_request = Raw(b64decode(d))
+                self.stream.send(ssh_request)
+                self.recv_data.clear()
+                send(Core.forge_packet(self, pkt, _DONE), verbose=0)
         elif code == _DATA:
             self.iwt_pkt = None
-        send(Core.forge_packet(self, pkt, _DONE), verbose=0)
+            send(Core.forge_packet(self, pkt, _DONE), verbose=0)
         raise self.WAITING()
  
     @ATMT.state(final=True)

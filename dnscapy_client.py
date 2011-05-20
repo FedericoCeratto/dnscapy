@@ -73,13 +73,15 @@ class Client(Automaton):
         return limit_size
 
     def fragment_data(self, data, limit_size):
-        qname = []
+        data_dict = {}
         rest = data
+        i = 0
         while len(rest) > 0:
             d = rest[:limit_size]
-            qname.append('.'.join([d[j:j+self.label_size] for j in range(0, len(d), self.label_size)]))
+            data_dict[i] = ('.'.join([d[j:j+self.label_size] for j in range(0, len(d), self.label_size)]))
             rest = rest[limit_size:]
-        return qname
+            i += 1
+        return data_dict
 
     @ATMT.state(initial=True)
     def START(self):
@@ -121,15 +123,18 @@ class Client(Automaton):
                 recv_data = "".join(rdata[3:])
             raise self.CON(con_id, nb_msg_needed, recv_data)
         elif msg_type == _DATA:
-            pkt_nb_ack = rdata[1]
-            raise self.DATA(pkt_nb_ack)
+            if rdata[1].isdigit():
+                pkt_nb_ack = int(rdata[1])
+                raise self.DATA(pkt_nb_ack)
         elif msg_type == _WYW:
-            nb_pkts = rdata[1]
-            raise self.TTM(msg_type, str(int(nb_pkts)-1))
+            if rdata[1].isdigit():
+                nb_pkts = int(rdata[1])
+                raise self.TTM(msg_type, str(nb_pkts-1))
         elif msg_type == _TTM:
-            pkt_received_nb = rdata[1]
-            recv_data = "".join(rdata[2:])
-            raise self.TTM(msg_type, recv_data, pkt_received_nb)
+            if rdata[1].isdigit() and len(rdata) > 2:
+                pkt_received_nb = rdata[1]
+                recv_data = "".join(rdata[2:])
+                raise self.TTM(msg_type, recv_data, pkt_received_nb)
         elif msg_type == _DONE:
             if self.wyw_token > 0:
                 self.wyw_token -= 1
@@ -181,21 +186,16 @@ class Client(Automaton):
     @ATMT.state()
     def DATA(self, ack_nb=None):
         self.wyw_token = 3
-        if ack_nb is None:
-            first_pkt_of_data = self.forge_packet("{0}.{1}.{2}".format(self.data_to_send[-1], str(len(self.data_to_send) - 1), _DATA))
-            raise self.SR1(first_pkt_of_data)
-        elif ack_nb == "0":
-            self.data_to_send = []
-            done_pkt = self.forge_packet("{0}.{1}".format(_DATA, _DONE))
-            raise self.SR1(done_pkt)
-        elif ack_nb == str(len(self.data_to_send) - 1):
-            self.data_to_send = self.data_to_send[:-1]
-            pkt_of_data = self.forge_packet("{0}.{1}.{2}".format(self.data_to_send[-1], str(len(self.data_to_send) - 1), _DATA))
-            raise self.SR1(pkt_of_data)
-        else:
-            pkt_of_data = self.forge_packet(self.data_to_send[-1])
-            raise self.SR1(pkt_of_data)
-
+        if ack_nb is not None:
+            if self.data_to_send.has_key(ack_nb):
+                del(self.data_to_send[ack_nb])
+            if len(self.data_to_send) == 0:
+                done_pkt = self.forge_packet("{0}.{1}".format(_DATA, _DONE))
+                raise self.SR1(done_pkt)
+        k = self.data_to_send.keys()[0]
+        pkt_of_data = self.forge_packet("{0}.{1}.{2}".format(self.data_to_send[k], k, _DATA))
+        raise self.SR1(pkt_of_data)
+        
     @ATMT.state()
     def WYW(self):
         """WYW (What do You Want) state of the automaton.

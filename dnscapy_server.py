@@ -166,7 +166,7 @@ class Child(Core):
                     self.msg_type = qname[-4]
                     if len(qname) == 4 and self.msg_type in [_IWT]:
                         return True
-                    if len(qname) > 4 and self.msg_type in [_ACK, _DATA, _DONE]:
+                    if len(qname) > 4 and self.msg_type in [_ACK, _DATA, _FAST, _DONE]:
                         self.arg = qname[-5]
                         self.payload = qname[:-5] 
                         return True
@@ -193,7 +193,7 @@ class Child(Core):
             qname = [data[i:i+limit_size] for i in range(0, len(data), limit_size)]
         return qname
         
-    def optimize(self, l):
+    def compress(self, l):
         """ [1,2,4,12,7,11,3,14,13] => '1-4.7.11-14' """
         l.sort()
         temp = [[l[0]]]
@@ -289,22 +289,25 @@ class Child(Core):
             raise self.WAITING()
         elif self.msg_type == _FAST:
             self.fast_pkt = pkt
-            self.to_ack = [str(pkt_nb)]
+            self.to_ack = [pkt_nb]
         
     @ATMT.receive_condition(DATA_RECEPTION)
     def got_data(self, pkt):
         if self.msg_type == _FAST:
-            pkt_nb = self.arg
-            if pkt_nb.isdigit():
+            if self.arg.isdigit():
+                #self.fast_pkt = pkt
+                pkt_nb = int(self.arg)
+                print "RECEIVED DURING FAST TIMEOUT: "+ str(pkt_nb) 
                 if not self.recv_data.has_key(pkt_nb):
                     self.recv_data[pkt_nb] = "".join(self.payload)
-                self.to_ack.append(str(pkt_nb))    
+                if pkt_nb not in self.to_ack:
+                    self.to_ack.append(pkt_nb)    
     
     @ATMT.timeout(DATA_RECEPTION, 0.5)
     def ack(self):
         #TODO check the limit size
-        l = self.optimize(self.to_ack)
-        ack_pkt = Core.forge_packet(self.fast_pkt, "{0}.{1}".format(_FAST, l))
+        l = self.compress(self.to_ack)
+        ack_pkt = Core.forge_packet(self, self.fast_pkt, "{0}.{1}".format(_FAST, l))
         send(ack_pkt, verbose=0)
         raise self.WAITING()
 

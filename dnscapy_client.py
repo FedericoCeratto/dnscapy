@@ -25,7 +25,7 @@
 # Making a DNS tunnel to bypass a security policy may be forbidden
 # Do it at your own risks
 
-from scapy.all import IP, UDP, DNS, DNSQR, send, Automaton, ATMT, log_interactive
+from scapy.all import IP, UDP, DNS, DNSQR, DNSRR, send, Automaton, ATMT, log_interactive
 from math import ceil
 from random import randint, choice
 from datetime import datetime
@@ -46,7 +46,7 @@ class Client(Automaton):
         self.dn = dn
         self.ip_dns = ip_dns
         self.keep_alive = keep_alive
-        self.timeout = timeout
+        self._timeout = timeout
         self.retry = retry
         self.mode = mode
         
@@ -56,18 +56,18 @@ class Client(Automaton):
                 UDP in pkt and pkt[UDP].sport == 53 and 
                 DNS in pkt and pkt[DNS].qr == 1 and
                 pkt[DNS].rcode == 0 and
-                DNSQR in pkt and DNSRR in pkt[DNS].an and
+                DNSQR in pkt[DNS] and DNSRR in pkt[DNS].an and
                 pkt[UDP].dport in [ p[UDP].sport for p in self.sr1_pkts ] and
                 pkt[DNS].id in [ p[DNS].id for p in self.sr1_pkts ] and
-                pkt[DNSQR].qname in [ p[DNSQR].qname for p in self.sr1_pkts ] and
-                pkt[DNS].an.type in [ p[DNS].an.type for p in self.sr1_pkts ] ):
+                pkt[DNSQR].qname in [ p[DNSQR].qname + "." for p in self.sr1_pkts ] and
+                pkt[DNS].an.type in [ p[DNSQR].qtype for p in self.sr1_pkts ] ):
             rdata = pkt[DNS].an.rdata
             if pkt[DNS].an.sprintf("%type%") == "TXT":
                 for i in range(0, len(rdata), 0xff):
                     rdata = rdata[:i] + rdata[i+1:]
             self.rdata = rdata.split(".")
             self.msg_type = self.rdata[0]
-            self.retry_token = self.token
+            self.retry_token = self.retry
             return True
         return False
 
@@ -78,7 +78,7 @@ class Client(Automaton):
         if is_connection:
             con_id = ""
         else:
-            con_id = self.con_id + "."
+            con_id = "{0}.".format(self.con_id)
         if self.mode == "RAND":
             if rand or self.qtype is None:
                 self.qtype = choice(["TXT","CNAME"])
@@ -89,7 +89,7 @@ class Client(Automaton):
         return IP(dst=self.ip_dns)/UDP(sport=sp)/DNS(id=i, rd=1, qd=q)
 
     def calculate_limit_size(self):
-        temp = self.qname_max_size - len(self.dn) - self.n_size - 5 - 10 - len(self.con_id) - 1
+        temp = self.qname_max_size - len(self.dn) - self.n_size - 5 - 10 - len(str(self.con_id)) - 1
         limit_size = int(temp - ceil(float(temp)/(self.label_size+1)))
         return limit_size
 
@@ -104,7 +104,7 @@ class Client(Automaton):
             i += 1
         return data_dict
     
-    def decompress(s):
+    def decompress(self, s):
         """ '0-6.8.12-14.19' => [0,1,2,3,4,5,6,8,12,13,14,19] """
         l = s.split(".")
         result = []
@@ -177,7 +177,7 @@ class Client(Automaton):
     def fast_pkt(self, pkt):
         if self.msg_type == _FAST:
             if len(self.rdata) > 1:
-                ack_range = self.rdata[1:]
+                ack_range = "".join(self.rdata[1:])
                 raise self.FAST(ack_range) 
     
     @ATMT.receive_condition(SR1)
@@ -262,7 +262,6 @@ class Client(Automaton):
     def FAST(self, ack_range=None): 
         self.wyw_token = 3 
         if ack_range is not None:
-            print sys.stderr , "ack-range:" + repr(ack_range)
             ack_list = self.decompress(ack_range)
             for a in ack_list:
                 if self.data_to_send.has_key(a):

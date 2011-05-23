@@ -295,9 +295,8 @@ class Child(Core):
     def got_data(self, pkt):
         if self.msg_type == _FAST:
             if self.arg.isdigit():
-                #self.fast_pkt = pkt
+                self.fast_pkt = pkt
                 pkt_nb = int(self.arg)
-                print "RECEIVED DURING FAST TIMEOUT: "+ str(pkt_nb) 
                 if not self.recv_data.has_key(pkt_nb):
                     self.recv_data[pkt_nb] = "".join(self.payload)
                 if pkt_nb not in self.to_ack:

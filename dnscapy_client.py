@@ -41,12 +41,11 @@ _DONE = "e"
 _FAST = "f"
 
 class Client(Automaton):
-    def parse_args(self, dn, ip_dns, debug=0, keep_alive=5, timeout=3, retry=3, mode="CNAME"):
+    def parse_args(self, dn, ip_dns, debug=0, keep_alive=5, retry=3, mode="CNAME"):
         Automaton.parse_args(self, debug)
         self.dn = dn
         self.ip_dns = ip_dns
         self.keep_alive = keep_alive
-        self._timeout = timeout
         self.retry = retry
         self.mode = mode
         
@@ -301,14 +300,13 @@ class Client(Automaton):
         print >> sys.stderr, "Error message: ", error_msg
         
 if __name__ == "__main__":
-    v = "%prog 0.2 - 2011"
+    v = "%prog 0.99 - 2011"
     u = "usage: %prog [options]  DOMAIN_NAME  IP_INTERNAL_DNS  [options]"
     parser = OptionParser(usage=u, version=v)
     parser.add_option("-m", "--mode", dest="mode", help="Set the DNS field use for the tunneling. Possible values are CNAME, TXT and RAND. TXT offers better speed but CNAME offers better compatibility. RAND mean that both TXT and CNAME are randomly used. Default is CNAME.", default="CNAME")
     parser.add_option("-g", "--graph", dest="graph", action="store_true", help="Generate the graph of the automaton, save it to /tmp and exit. You will need some extra packages. Refer to www.secdev.org/projects/scapy/portability.html. In short: apt-get install graphviz imagemagick python-gnuplot python-pyx", default=False)
     parser.add_option("-d", "--debug-lvl", dest="debug", type="int", help="Set the debug level, where D is an integer between 0 (quiet) and 5 (very verbose). Default is 0", metavar="D", default=0)
     parser.add_option("-k", "--keep-alive", dest="keep_alive", type="int", help="After waiting during K seconds, the client sends a keep-alive packet. Default is 5.", metavar="K", default=5)
-    parser.add_option("-t", "--timeout", dest="timeout", type="int", help="After sending a packet to the server, the client waits for the reply up to T seconds. If there is no reply the packet is re-sent. Default is 3.", metavar="T", default=3)
     parser.add_option("-r", "--retry", dest="retry", type="int", help="After R retries without response, the connection with the server is considered broken. Default is 3.", metavar="R", default=3)
     (opt, args) = parser.parse_args()
     if opt.graph:

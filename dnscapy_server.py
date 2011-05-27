@@ -357,7 +357,7 @@ class Child(Core):
 
         
 if __name__ == "__main__":
-    v = "%prog 0.1 - 2011"
+    v = "%prog 0.99 - 2011"
     u = "usage: %prog [options]  DOMAIN_NAME  EXTERNAL_IP  [options]"
     parser = OptionParser(usage=u, version=v)
     parser.add_option("-g", "--graph", dest="graph", action="store_true", help="Generate the graph of the automaton, save it to /tmp and exit. You will need some extra packages. Refer to www.secdev.org/projects/scapy/portability.html. In short: apt-get install graphviz imagemagick python-gnuplot python-pyx", default=False)

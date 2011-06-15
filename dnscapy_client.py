@@ -25,7 +25,7 @@
 # Making a DNS tunnel to bypass a security policy may be forbidden
 # Do it at your own risks
 
-from scapy.all import IP, UDP, DNS, DNSQR, DNSRR, send, Automaton, ATMT, log_interactive
+from scapy.all import IP, UDP, DNS, DNSQR, DNSRR, send, Automaton, ATMT, log_interactive #, untxtfy
 from math import ceil
 from random import randint, choice
 from datetime import datetime
@@ -62,6 +62,8 @@ class Client(Automaton):
                 pkt[DNS].an.type in [ p[DNSQR].qtype for p in self.sr1_pkts ] ):
             rdata = pkt[DNS].an.rdata
             if pkt[DNS].an.sprintf("%type%") == "TXT":
+                # if scapy is patched:
+                # rdata = untxtfy(rdata)
                 for i in range(0, len(rdata), 0xff):
                     rdata = rdata[:i] + rdata[i+1:]
             self.rdata = rdata.split(".")
@@ -300,10 +302,10 @@ class Client(Automaton):
         print >> sys.stderr, "Error message: ", error_msg
         
 if __name__ == "__main__":
-    v = "%prog 0.99 - 2011"
+    v = "%prog 0.99b - 2011"
     u = "usage: %prog [options]  DOMAIN_NAME  IP_INTERNAL_DNS  [options]"
     parser = OptionParser(usage=u, version=v)
-    parser.add_option("-m", "--mode", dest="mode", help="Set the DNS field use for the tunneling. Possible values are CNAME, TXT and RAND. TXT offers better speed but CNAME offers better compatibility. RAND mean that both TXT and CNAME are randomly used. Default is CNAME.", default="CNAME")
+    parser.add_option("-m", "--mode", dest="mode", help="Set the DNS field use for the tunneling. Possible values are CNAME, TXT and RAND. TXT offers better speed but CNAME offers better compatibility. RAND mean that both TXT and CNAME are randomly used. Default is RAND.", default="RAND")
     parser.add_option("-g", "--graph", dest="graph", action="store_true", help="Generate the graph of the automaton, save it to /tmp and exit. You will need some extra packages. Refer to www.secdev.org/projects/scapy/portability.html. In short: apt-get install graphviz imagemagick python-gnuplot python-pyx", default=False)
     parser.add_option("-d", "--debug-lvl", dest="debug", type="int", help="Set the debug level, where D is an integer between 0 (quiet) and 5 (very verbose). Default is 0", metavar="D", default=0)
     parser.add_option("-k", "--keep-alive", dest="keep_alive", type="int", help="After waiting during K seconds, the client sends a keep-alive packet. Default is 5.", metavar="K", default=5)
@@ -313,12 +315,12 @@ if __name__ == "__main__":
         Client.graph(target="> /tmp/dnscapy_client.pdf")
         sys.exit(0)
     if opt.mode not in ["CNAME", "TXT", "RAND"]:
-        parser.error("incorrect mode. Possible values are CNAME, TXT and RAND. Default is CNAME.")
+        parser.error("incorrect mode. Possible values are CNAME, TXT and RAND. Default is RAND.")
     if len(args) != 2:
         parser.error("incorrect number of arguments. Please give the domain name to use and the IP address of the client's internal DNS server")
     dn = args[0]
     ip_dns = args[1]
     log_interactive.setLevel(1)
-    dnscapy = Client(dn=dn, ip_dns=ip_dns, debug=opt.debug, keep_alive=opt.keep_alive, timeout=opt.timeout, retry=opt.retry, mode=opt.mode)
+    dnscapy = Client(dn=dn, ip_dns=ip_dns, debug=opt.debug, keep_alive=opt.keep_alive, retry=opt.retry, mode=opt.mode)
     dnscapy.run()
 

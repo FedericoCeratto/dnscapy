@@ -25,7 +25,7 @@
 # Making a DNS tunnel to bypass a security policy may be forbidden
 # Do it at your own risks
 
-from scapy.all import IP, UDP, DNS, DNSQR, DNSRR, Raw, send, Automaton, ATMT, StreamSocket, log_interactive
+from scapy.all import IP, UDP, DNS, DNSQR, DNSRR, Raw, send, Automaton, ATMT, StreamSocket, log_interactive #, txtfy
 from random import randint
 from threading import Thread
 from optparse import OptionParser
@@ -62,8 +62,10 @@ class Core(Automaton):
         q = pkt[DNS].qd    
         t = pkt[DNSQR].qtype
         if t == TXT:
+            # if scapy is patched:
+            # rdata = txtfy(rdata) 
             for i in range(0, len(rdata), 0xff+1):
-                rdata = rdata[:i] + chr(len(rdata[i:i+0xff])) + rdata[i:]     
+                rdata = rdata[:i] + chr(len(rdata[i:i+0xff])) + rdata[i:]   
         an = (None, DNSRR(rrname=self.dn, type=t, rdata=rdata, ttl=60))[rcode == 0]        
         ns = DNSRR(rrname=self.dn, type="NS", ttl=3600, rdata="ns."+self.dn)
         return IP(dst=d)/UDP(dport=dp)/DNS(id=id, qr=1, rd=1, ra=1, rcode=rcode, qd=q, an=an, ns=ns)
@@ -357,7 +359,7 @@ class Child(Core):
 
         
 if __name__ == "__main__":
-    v = "%prog 0.99 - 2011"
+    v = "%prog 0.99b - 2011"
     u = "usage: %prog [options]  DOMAIN_NAME  EXTERNAL_IP  [options]"
     parser = OptionParser(usage=u, version=v)
     parser.add_option("-g", "--graph", dest="graph", action="store_true", help="Generate the graph of the automaton, save it to /tmp and exit. You will need some extra packages. Refer to www.secdev.org/projects/scapy/portability.html. In short: apt-get install graphviz imagemagick python-gnuplot python-pyx", default=False)

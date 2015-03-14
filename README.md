@@ -1,7 +1,7 @@
-# dnscapy
-Automatically exported from code.google.com/p/dnscapy
+DNScapy (unofficial mirror)
+-------
 
-DNScapy
+Automatically exported from code.google.com/p/dnscapy
 
 DNScapy is a DNS tunneling tool. The code is very light and written in Python. It includes a server and a client. The server can handle multiple clients.
 
@@ -10,15 +10,6 @@ DNScapy creates a SSH tunnel through DNS packets. SSH connection, SCP and proxy 
 DNScapy uses Scapy (http://www.secdev.org/scapy) for DNS packet forging and for his network automaton API.
 
 DNScapy is still under development. The current version is 0.99b and seems to work pretty well. Feel free to clone and test it !
-
-    DNScapy
-        Software Requirements
-        Hardware Requirements
-        Howto
-        Why making a DNS tunnel ?
-        Why a SSH tunnel through DNS ?
-        Known bugs
-        Copyright and license
 
 Software Requirements
 
